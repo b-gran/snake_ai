@@ -2,8 +2,9 @@ import pygame
 from pygame.locals import *
 import math
 from enum import Enum, auto
-from typing import Optional, Iterable
+from typing import Optional, Iterable, List, Deque
 import random
+import collections
 
 CELL_SIZE = 60
 
@@ -77,6 +78,7 @@ class Player:
 	grid: Grid
 	body_tail: BodyNode
 	body_head: BodyNode
+	input_buffer: Deque[Direction]
 
 	def __init__(self, grid: Grid):
 		self.grid = grid
@@ -92,6 +94,8 @@ class Player:
 
 		self.body_head = BodyNode(self.position)
 		self.body_tail = self.body_head
+
+		self.input_buffer = collections.deque(maxlen=2)
 
 	def can_move(self, direction: Direction) -> bool:
 		r, c = move_direction(self.position, direction)
@@ -143,6 +147,27 @@ class Player:
 
 			# Update head
 			self.body_head = new_head
+
+	def enqueue_input(self, direction):
+		self.input_buffer.append(direction)
+
+	def pop_input(self):
+		if len(self.input_buffer) > 0:
+			return self.input_buffer.popleft()
+
+		return None
+
+	def try_set_direction(self, direction):
+		if self.direction == Direction.UP and direction == Direction.DOWN:
+			return
+		if self.direction == Direction.DOWN and direction == Direction.UP:
+			return
+		if self.direction == Direction.LEFT and direction == Direction.RIGHT:
+			return
+		if self.direction == Direction.RIGHT and direction == Direction.LEFT:
+			return
+
+		self.direction = direction
 
 	def body_iter(self) -> Iterable[BodyNode]:
 		curr = self.body_tail
@@ -225,15 +250,19 @@ def main():
 
 			if event.type == KEYDOWN:
 				if event.key == K_UP:
-					player.direction = Direction.UP
+					player.enqueue_input(Direction.UP)
 				elif event.key == K_RIGHT:
-					player.direction = Direction.RIGHT
+					player.enqueue_input(Direction.RIGHT)
 				elif event.key == K_DOWN:
-					player.direction = Direction.DOWN
+					player.enqueue_input(Direction.DOWN)
 				elif event.key == K_LEFT:
-					player.direction = Direction.LEFT
+					player.enqueue_input(Direction.LEFT)
 
 			if event.type == Events.MOVEMENT_TICK.value:
+				new_direction = player.pop_input()
+				if new_direction:
+					player.try_set_direction(new_direction)
+
 				if player.can_move(player.direction):
 					player.move(player.direction)
 				else:
