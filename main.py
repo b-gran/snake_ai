@@ -19,6 +19,7 @@ COLOR_FOOD = (255, 161, 199)
 
 Position = (int, int)
 
+
 class Grid:
 	def __init__(self, width: int, height: int):
 		self.width = width
@@ -198,8 +199,8 @@ class Player:
 		for r in range(len(self.body_state)):
 			for c in range(len(self.body_state[r])):
 				if self.body_state[r][c] != CellType.BODY and not (
-					r == food.position[0] and
-					c == food.position[1]
+						r == food.position[0] and
+						c == food.position[1]
 				):
 					valid_positions.append((r, c))
 
@@ -218,66 +219,115 @@ class Food:
 	def draw(self, surface):
 		r, c = self.position
 		# circle(surface, color, center, radius)
-		pygame.draw.circle(surface, COLOR_FOOD, [c*CELL_SIZE + CELL_SIZE/2, r*CELL_SIZE + CELL_SIZE/2], int(CELL_SIZE/3))
+		pygame.draw.circle(
+			surface, COLOR_FOOD, [c * CELL_SIZE + CELL_SIZE / 2, r * CELL_SIZE + CELL_SIZE / 2],
+			int(CELL_SIZE / 3))
 
 
 class Events(Enum):
 	MOVEMENT_TICK = pygame.USEREVENT
 
 
-def main():
-	pygame.init()
+class GameState:
+	def handle_events(self, game: 'Game'):
+		raise NotImplementedError()
 
-	# TODO: level class
-	pygame.time.set_timer(Events.MOVEMENT_TICK.value, 100)
+	def update(self, game: 'Game'):
+		raise NotImplementedError()
 
-	grid = Grid(800, 800)
-	player = Player(grid)
-	food = Food((0, 0))
+	def draw(self, game: 'Game'):
+		raise NotImplementedError()
 
-	clock = pygame.time.Clock()
 
-	screen = pygame.display.set_mode((grid.width, grid.height))
-	pygame.display.set_caption('Snake')
+class Game:
+	current_state: GameState
 
-	# Event loop
-	while True:
-		clock.tick(60)
+	def __init__(self, screen_size: (int, int)):
+		self.screen = pygame.display.set_mode(screen_size)
+		pygame.display.set_caption('Snake')
 
+		# TODO: level class
+		pygame.time.set_timer(Events.MOVEMENT_TICK.value, 100)
+
+		self.grid = Grid(screen_size[0], screen_size[1])
+		self.player = Player(self.grid)
+		self.food = Food((0, 0))
+
+		self.running = True
+
+	def set_state(self, state: GameState):
+		self.current_state = state
+
+	def handle_events(self):
+		self.current_state.handle_events(self)
+
+	def update(self):
+		self.current_state.update(self)
+
+	def draw(self):
+		self.current_state.draw(self)
+
+	def is_running(self):
+		return self.running
+
+	def quit(self):
+		self.running = False
+
+
+class LevelState(GameState):
+
+	def handle_events(self, game: Game):
 		for event in pygame.event.get():
 			if event.type == QUIT:
-				return
+				game.quit()
 
 			if event.type == KEYDOWN:
 				if event.key == K_UP:
-					player.enqueue_input(Direction.UP)
+					game.player.enqueue_input(Direction.UP)
 				elif event.key == K_RIGHT:
-					player.enqueue_input(Direction.RIGHT)
+					game.player.enqueue_input(Direction.RIGHT)
 				elif event.key == K_DOWN:
-					player.enqueue_input(Direction.DOWN)
+					game.player.enqueue_input(Direction.DOWN)
 				elif event.key == K_LEFT:
-					player.enqueue_input(Direction.LEFT)
+					game.player.enqueue_input(Direction.LEFT)
 
 			if event.type == Events.MOVEMENT_TICK.value:
-				new_direction = player.pop_input()
+				new_direction = game.player.pop_input()
 				if new_direction:
-					player.try_set_direction(new_direction)
+					game.player.try_set_direction(new_direction)
 
-				if player.can_move(player.direction):
-					player.move(player.direction)
+				if game.player.can_move(game.player.direction):
+					game.player.move(game.player.direction)
 				else:
 					print('Would die')
 
-			# print(event)
+	def update(self, game: Game):
+		if game.player.is_on_food(game.food):
+			game.player.max_length += 1
+			game.food.position = game.player.get_new_food_position(game.food)
 
-		if player.is_on_food(food):
-			player.max_length += 1
-			food.position = player.get_new_food_position(food)
+	def draw(self, game: Game):
+		game.screen.fill((0, 0, 0))
+		game.grid.draw_background(game.screen)
+		game.player.draw(game.screen)
+		game.food.draw(game.screen)
 
-		screen.fill((0, 0, 0))
-		grid.draw_background(screen)
-		player.draw(screen)
-		food.draw(screen)
+
+def main():
+	pygame.init()
+	screen_size = (800, 800)
+	clock = pygame.time.Clock()
+
+	game = Game(screen_size)
+	game.set_state(LevelState())
+
+	# Event loop
+	while game.is_running():
+		clock.tick(60)
+
+		game.handle_events()
+		game.update()
+		game.draw()
 
 		pygame.display.flip()
 
