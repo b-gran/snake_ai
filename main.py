@@ -2,9 +2,15 @@ import pygame
 from pygame.locals import *
 import math
 from enum import Enum, auto
-from typing import Optional, Iterable, List, Deque
+from typing import Optional, Iterable, List, Deque, Union, Tuple
 import random
 import collections
+
+from abc import ABC
+
+from Button import Button
+
+pygame.init()
 
 CELL_SIZE = 60
 
@@ -19,8 +25,18 @@ COLOR_FOOD = (255, 161, 199)
 
 Position = (int, int)
 
+FONT = pygame.font.SysFont('americantypewriter', 14)
+
 
 class Grid:
+	@staticmethod
+	def grid_size(bounding_size: (int, int), cell_size: int) -> (int, int):
+		width, height = bounding_size
+		return (
+			width - (width % cell_size),
+			height - (height % cell_size),
+		)
+
 	def __init__(self, width: int, height: int):
 		self.width = width
 		self.height = height
@@ -241,8 +257,10 @@ class GameState:
 
 class Game:
 	current_state: GameState
+	clock: pygame.time.Clock
 
-	def __init__(self, screen_size: (int, int)):
+	def __init__(self, screen_size: (int, int), clock):
+		self.clock = clock
 		self.screen = pygame.display.set_mode(screen_size)
 		pygame.display.set_caption('Snake')
 
@@ -266,6 +284,14 @@ class Game:
 
 	def draw(self):
 		self.current_state.draw(self)
+		self.draw_fps()
+
+	def draw_fps(self):
+		fps_text = FONT.render(str(int(self.clock.get_fps())), True, hex_to_rgb('FFFFFF'))
+		self.screen.blit(
+			fps_text,
+			(0, 0)
+		)
 
 	def is_running(self):
 		return self.running
@@ -313,13 +339,86 @@ class LevelState(GameState):
 		game.food.draw(game.screen)
 
 
+def filled_rect(dimensions, color):
+	surface = pygame.Surface(dimensions)
+	surface.fill(color)
+	return surface
+
+
+def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
+	stripped_hex = hex_str[1:] if hex_str[0] == '#' else hex_str
+	return (
+		int(stripped_hex[:2], 16),
+		int(stripped_hex[2:4], 16),
+		int(stripped_hex[4:6], 16),
+	)
+
+
+class WithSize(ABC):
+	width: int
+	height: int
+
+
+RectOrSurface = Union[pygame.Rect, pygame.Surface]
+RectOrSprite = Union[pygame.Rect, pygame.sprite.Sprite]
+
+
+def hcenter_rect(parent: Rect, child: RectOrSprite):
+	width = parent.width
+	child_rect = child if child is pygame.Rect else child.rect
+	child_rect.centerx = width / 2
+
+
+def vcenter_rect(parent: Rect, child: RectOrSprite):
+	height = parent.height
+	child_rect = child if child is pygame.Rect else child.rect
+	child_rect.centery = height / 2
+
+
+fonts = pygame.font.get_fonts()
+
+
+class MainMenuState(GameState):
+
+	def __init__(self):
+		self.start_game_button = Button(
+			x=0, y=0, width=200, height=100,
+			surface=filled_rect((200, 100), hex_to_rgb('B7CBFF')),
+			surface_hover=filled_rect((200, 100), hex_to_rgb('85A7FF')),
+			surface_click=filled_rect((200, 100), hex_to_rgb('6B95FF')),
+			text='test',
+			text_color=hex_to_rgb('FFFFFF'),
+			font=FONT,
+			on_click=lambda: print('click'),
+		)
+
+		self.button_sprites: Union[pygame.sprite.Group, Iterable[Button]] = pygame.sprite.Group()
+		self.button_sprites.add(self.start_game_button)
+
+	def handle_events(self, game: 'Game'):
+		for event in pygame.event.get():
+			if event.type == QUIT:
+				game.quit()
+			for button in self.button_sprites:
+				button.handle_event(event)
+
+	def update(self, game: 'Game'):
+		hcenter_rect(game.screen.get_rect(), self.start_game_button)
+		vcenter_rect(game.screen.get_rect(), self.start_game_button)
+
+	def draw(self, game: 'Game'):
+		game.screen.fill((0, 0, 0))
+		game.grid.draw_background(game.screen)
+		self.button_sprites.draw(game.screen)
+
+
 def main():
-	pygame.init()
-	screen_size = (800, 800)
+	screen_size = Grid.grid_size((800, 800), CELL_SIZE)
 	clock = pygame.time.Clock()
 
-	game = Game(screen_size)
+	game = Game(screen_size, clock)
 	game.set_state(LevelState())
+	# game.set_state(MainMenuState())
 
 	# Event loop
 	while game.is_running():
