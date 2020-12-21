@@ -133,13 +133,8 @@ class Environment:
         return copy
 
     def get_state(self) -> TState:
-        grid_flat = np.reshape(self.grid, self.num_cells)
-        direction_ohe = np.zeros(len(Direction))
-        direction_ohe[self.direction.value] = 1
-        return np.array([
-            # np.append(grid_flat, [self.direction.value])
-            np.append(grid_flat, direction_ohe)
-        ])
+        np_float_grid = np.reshape(self.grid, self.size) * 1.0
+        return np.expand_dims(np_float_grid, 0)
 
     def get_new_food_position(self):
         valid_positions = []
@@ -332,6 +327,28 @@ EXPLORATION_DECAY = 0.995
 MemoryType = (List[int], ActionType, float, List[int], bool)
 
 
+class Net(nn.Module):
+
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(8, 4, kernel_size=2, stride=1),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, len(ActionType)),
+        )
+
+    def forward(self, x):
+        result = self.conv(x)
+        return result
+
+
 class Solver:
 
     memory: Deque['MemoryType']
@@ -346,15 +363,28 @@ class Solver:
         self.observation_space = observation_space
         self.action_space = len(ActionType)
 
+        # self.model = nn.Sequential(
+        #     nn.Conv2d(1, 32, kernel_size=2, stride=2),
+        #     nn.ReLU(),
+        #     nn.Linear(32, 32),
+        #     nn.ReLU(),
+        #     nn.Linear(32, self.action_space),
+        # )
+        # self.model = Net()
+
         self.model = nn.Sequential(
-            nn.Linear(observation_space, 128),
+            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
             nn.ReLU(),
-            nn.Linear(128, 96),
+            nn.Conv2d(8, 4, kernel_size=2, stride=1),
             nn.ReLU(),
-            nn.Linear(96, 64),
+            nn.Flatten(),
+            nn.Linear(64, 64),
             nn.ReLU(),
-            nn.Linear(64, self.action_space)
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, len(ActionType)),
         )
+
         self.optimizer = optim.RMSprop(self.model.parameters())
 
         if checkpoint is not None:
@@ -376,17 +406,15 @@ class Solver:
         self.memory.append((state, action, reward, next_state, done))
 
     def predict(self, state: List[int]) -> torch.Tensor:
-        return self.model(torch.tensor(state, dtype=torch.float))
+        return self.model(torch.tensor(state, dtype=torch.float).unsqueeze(0))
 
     def act(self, state: [int]) -> ActionType:
         if random.random() < self.exploration_rate:
             return ActionType(random.randrange(self.action_space))
 
-        predictions = self.model(torch.tensor(state, dtype=torch.float))
-        # print('predictions', predictions)
+        predictions = self.predict(state)
 
         return ActionType(int(predictions.argmax()))
-        # return ActionType(int(self.model(torch.tensor(state, dtype=torch.float)).argmax()))
 
     def print_state(self, state: NDArray[(Any, Any), np.int]):
         grid = np.reshape(state[0][:self.observation_space-1], GRID_SIZE)
@@ -400,29 +428,40 @@ class Solver:
 
         if self.batch_num % 100 == 0:
             print('batch', self.batch_num)
-            print('average loss', self.cumulative_loss / (100*BATCH_SIZE))
+            print('average loss', self.cumulative_loss / 100)
             self.cumulative_loss = 0
 
-        batches = random.sample(self.memory, BATCH_SIZE)
-        for state, action, reward, state_next, terminal in batches:
-            q_update = reward
-            if not terminal:
-                q_update = reward + GAMMA * self.predict(state_next).max()
-            original_prediction = self.predict(state)
-            q_values = original_prediction.clone().detach()
-            q_values[0][action.value] = q_update
+        batch = random.sample(self.memory, BATCH_SIZE)
 
-            # loss = F.mse_loss(original_prediction, q_values)
-            loss = F.smooth_l1_loss(original_prediction, q_values)
-            self.cumulative_loss += float(loss)
+        states, actions, rewards, state_nexts, terminals = zip(*batch)
+        non_terminal_mask = torch.tensor(list(map(
+            lambda is_terminal: not is_terminal,
+            terminals
+        )))
+        non_terminal_next_states = torch.tensor([
+            s for s, t in zip(state_nexts, terminals) if not t
+        ], dtype=torch.float)
 
-            self.optimizer.zero_grad()
-            loss.backward()
+        action_tensor = torch.tensor(list(map(lambda a: a.value, actions))).reshape((BATCH_SIZE, 1))
+        state_tensor = torch.tensor(states, dtype=torch.float)
+        reward_tensor = torch.tensor(rewards, dtype=torch.float)
 
-            for param in self.model.parameters():
-                param.grad.data.clamp_(-5, 5)
+        current_predictions = self.model(state_tensor).gather(1, action_tensor)
+        next_predictions = torch.zeros(BATCH_SIZE)
+        next_predictions[non_terminal_mask] = self.model(non_terminal_next_states).max(1)[0].detach()
+        expected_q_values = (next_predictions * GAMMA) + reward_tensor
 
-            self.optimizer.step()
+        loss = F.smooth_l1_loss(current_predictions, expected_q_values.unsqueeze(1))
+
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        for param in self.model.parameters():
+            param.grad.data.clamp_(-5, 5)
+
+        self.optimizer.step()
+
+        self.cumulative_loss += float(loss)
 
         self.exploration_rate = max(self.exploration_rate * EXPLORATION_DECAY, EXPLORATION_MIN)
 
