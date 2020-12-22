@@ -176,12 +176,17 @@ class Environment:
         r, c = new_position
 
         if (
-            r >= self.size[0] or
-            r < 0 or
-            c >= self.size[1] or
-            c < 0 or
-            self.grid[r][c] == CELL_TYPE_BODY or
-            self.grid[r][c] == CELL_TYPE_HEAD
+            (
+                r >= self.size[0] or
+                r < 0 or
+                c >= self.size[1] or
+                c < 0 or
+                self.grid[r][c] == CELL_TYPE_BODY or
+                self.grid[r][c] == CELL_TYPE_HEAD
+            ) and not (
+                self.body_tail.position[0] == r and
+                self.body_tail.position[1] == c
+            )
         ):
             return -10.0, True
 
@@ -206,7 +211,18 @@ class Environment:
 
         r, c = move_direction(self.head_position, DIRECTION_BY_ACTION[action])
 
-        if r >= self.size[0] or r < 0 or c >= self.size[1] or c < 0 or self.grid[r][c] == CELL_TYPE_BODY:
+        if (
+            (
+                r >= self.size[0] or
+                r < 0 or
+                c >= self.size[1] or
+                c < 0 or
+                self.grid[r][c] == CELL_TYPE_BODY
+            ) and not
+            (
+                self.body_tail.position[0] == r and self.body_tail.position[1] == c
+            )
+        ):
             return False
 
         return True
@@ -216,6 +232,7 @@ class Environment:
             self.direction = DIRECTION_BY_ACTION[action]
 
         new_position = move_direction(self.head_position, self.direction)
+
         reward, is_terminal = self.get_reward(new_position)
         if is_terminal:
             return self.get_state(), reward, is_terminal
@@ -233,7 +250,6 @@ class Environment:
         # Need to grow the snake
         if ate_food:
             self.body_length += 1
-            # print('ate food', self.body_length)
 
             # Create new head
             new_head = BodyNode(new_position)
@@ -252,9 +268,10 @@ class Environment:
             # Not growing snake
             prev_tail = self.body_tail
 
-            # Clear cell at previous tail
+            # Clear cell at previous tail if we're not moving onto the tail
             r, c = prev_tail.position
-            self.grid[r][c] = CELL_TYPE_EMPTY
+            if self.grid[r][c] != CELL_TYPE_HEAD:
+                self.grid[r][c] = CELL_TYPE_EMPTY
 
             if prev_tail.next:
                 # More than one node in the body, need to remove the tail.
@@ -295,9 +312,10 @@ def draw_grid(state: EnvironmentGrid, surface: pygame.Surface, cell_size: int):
     for i in range(rows):
         for j in range(cols):
             if state[i][j] == CELL_TYPE_BODY or state[i][j] == CELL_TYPE_HEAD:
+                color = (255, 100, 100) if state[i][j] == CELL_TYPE_BODY else (200, 80, 80)
                 pygame.draw.rect(
                     surface,
-                    (255, 100, 100),
+                    color,
                     [
                         j * cell_size,
                         i * cell_size,
@@ -505,7 +523,7 @@ class Solver:
         self.batch_num += 1
 
 
-def main():
+def train_loop():
     screen = pygame.display.set_mode((GRID_SIZE[0] * CELL_SIZE, GRID_SIZE[1] * CELL_SIZE))
     grid = Grid(GRID_SIZE[0], GRID_SIZE[1], CELL_SIZE)
     clock = pygame.time.Clock()
@@ -561,5 +579,45 @@ def main():
                 pygame.display.flip()
 
 
+def human_test_loop():
+    screen = pygame.display.set_mode((GRID_SIZE[0] * CELL_SIZE, GRID_SIZE[1] * CELL_SIZE))
+    grid = Grid(GRID_SIZE[0], GRID_SIZE[1], CELL_SIZE)
+    clock = pygame.time.Clock()
+
+    env = Environment(GRID_SIZE)
+
+    while True:
+        clock.tick(60)
+
+        terminal = False
+        reward = 0
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP:
+                    _, reward, terminal = env.step(ActionType.ACTION_TYPE_UP)
+                    print('reward', reward)
+                elif event.key == pygame.K_RIGHT:
+                    _, reward, terminal = env.step(ActionType.ACTION_TYPE_RIGHT)
+                    print('reward', reward)
+                elif event.key == pygame.K_DOWN:
+                    _, reward, terminal = env.step(ActionType.ACTION_TYPE_DOWN)
+                    print('reward', reward)
+                elif event.key == pygame.K_LEFT:
+                    _, reward, terminal = env.step(ActionType.ACTION_TYPE_LEFT)
+                    print('reward', reward)
+
+
+        if terminal:
+            log('terminal')
+            env.reset()
+
+        grid.draw_background(screen)
+        draw_grid(env.grid, screen, CELL_SIZE)
+        pygame.display.flip()
+
+
 if __name__ == '__main__':
-    main()
+    # train_loop()
+    human_test_loop()
