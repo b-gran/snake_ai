@@ -194,7 +194,7 @@ class Environment:
             self.body_length == (self.size[0] * self.size[1]) - 1 and
             self.grid[r][c] == CELL_TYPE_FOOD
         ):
-            return 100000.0, True
+            return 1000.0, True
 
         return (
             100.0 if self.grid[r][c] == CELL_TYPE_FOOD else 0.0,
@@ -537,6 +537,7 @@ def train_loop():
 
     do_visualize = True
     action_count = 0
+    parameter_update_count = 500
 
     while True:
         env.reset()
@@ -554,7 +555,7 @@ def train_loop():
 
             # every COUNT actions, update the parameters in the target net
             # based on the policy net.
-            if action_count % 100 == 0:
+            if action_count % parameter_update_count == 0:
                 solver.target_net.load_state_dict(solver.policy_net.state_dict())
 
             if action_count % 1000 == 0:
@@ -619,5 +620,5 @@ def human_test_loop():
 
 
 if __name__ == '__main__':
-    # train_loop()
-    human_test_loop()
+    train_loop()
+    # human_test_loop()
