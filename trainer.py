@@ -569,7 +569,7 @@ def train_loop(maybe_device: Optional[torch.device] = None):
         state = env.get_state()
 
         while True:
-            if action_count % 10000 == 0:
+            if action_count % checkpoint_update_count == 0:
                 checkpoint_model(solver.policy_net, solver.optimizer, solver.memory, 'model.pt')
 
             for event in pygame.event.get():
