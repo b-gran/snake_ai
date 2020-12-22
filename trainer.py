@@ -18,7 +18,7 @@ import torch.optim as optim
 
 from collections import deque
 
-from training_util import load_checkpoint, average_reward
+from training_util import load_checkpoint, average_reward, checkpoint_model
 
 random.seed(1011970)
 
@@ -321,23 +321,43 @@ BATCH_SIZE = 40
 
 EXPLORATION_MAX = 1.0
 EXPLORATION_MIN = 0.01
-EXPLORATION_DECAY = 0.995
+EXPLORATION_DECAY = 0.9995
 
 
 MemoryType = (List[int], ActionType, float, List[int], bool)
 
 
-class Net(nn.Module):
+class TestNet(nn.Module):
 
     def __init__(self):
-        super(Net, self).__init__()
+        super(TestNet, self).__init__()
         self.conv = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
+            nn.Conv2d(1, 16, kernel_size=2, stride=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(),
-            nn.Conv2d(8, 4, kernel_size=2, stride=1),
+            nn.Conv2d(16, 8, kernel_size=3, stride=1),
+            nn.BatchNorm2d(8),
+            # nn.Linear(64, 64),
+            # nn.ReLU(),
+            # nn.Linear(64, 64),
+            # nn.ReLU(),
+            # nn.Linear(64, len(ActionType)),
+        )
+        self.c1 = nn.Sequential(
+            nn.Conv2d(1, 16, kernel_size=2, stride=1),
             nn.ReLU(),
+        )
+
+        self.c2 = nn.Sequential(
+            nn.Conv2d(16, 8, kernel_size=3, stride=1),
+            nn.ReLU(),
+        )
+
+        self.flatten = nn.Flatten()
+
+        self.lin = nn.Sequential(
             nn.Flatten(),
-            nn.Linear(64, 64),
+            nn.Linear(9, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
             nn.ReLU(),
@@ -345,8 +365,11 @@ class Net(nn.Module):
         )
 
     def forward(self, x):
-        result = self.conv(x)
-        return result
+        # result = self.conv(x)
+        y1 = self.c1(x)
+        y2 = self.c2(y1)
+        y3 = self.flatten(y2)
+        return y3
 
 
 class Solver:
@@ -355,7 +378,7 @@ class Solver:
 
     def __init__(
         self,
-        observation_space: int,
+        observation_space: (int, int),
         checkpoint: Optional[str] = None,
     ):
         self.exploration_rate = EXPLORATION_MAX
@@ -363,35 +386,48 @@ class Solver:
         self.observation_space = observation_space
         self.action_space = len(ActionType)
 
-        # self.model = nn.Sequential(
-        #     nn.Conv2d(1, 32, kernel_size=2, stride=2),
-        #     nn.ReLU(),
-        #     nn.Linear(32, 32),
-        #     nn.ReLU(),
-        #     nn.Linear(32, self.action_space),
-        # )
-        # self.model = Net()
+        linear_inputs = (observation_space[0]+1) * (observation_space[1]+1) * 4
 
-        self.model = nn.Sequential(
+        # self.model = TestNet()
+
+        # working conv
+        self.policy_net = nn.Sequential(
             nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
             nn.ReLU(),
             nn.Conv2d(8, 4, kernel_size=2, stride=1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(64, 64),
+            nn.Linear(linear_inputs, 64),
             nn.ReLU(),
             nn.Linear(64, 64),
             nn.ReLU(),
             nn.Linear(64, len(ActionType)),
         )
 
-        self.optimizer = optim.RMSprop(self.model.parameters())
+        # "old" network used for evaluating next states
+        self.target_net = nn.Sequential(
+            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(8, 4, kernel_size=2, stride=1),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(linear_inputs, 64),
+            nn.ReLU(),
+            nn.Linear(64, 64),
+            nn.ReLU(),
+            nn.Linear(64, len(ActionType)),
+        )
+        self.target_net.load_state_dict(self.policy_net.state_dict())
+        self.target_net.eval()
+
+        self.optimizer = optim.RMSprop(self.policy_net.parameters())
+        # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-2)
 
         if checkpoint is not None:
             model_state, optimizer_state, memory_state = load_checkpoint(checkpoint)
-            self.model.load_state_dict(model_state)
+            self.policy_net.load_state_dict(model_state)
             self.optimizer.load_state_dict(optimizer_state)
-            self.model.train()
+            self.policy_net.train()
 
             self.memory: Deque['MemoryType'] = deque(memory_state, maxlen=MEMORY_SIZE)
 
@@ -406,7 +442,7 @@ class Solver:
         self.memory.append((state, action, reward, next_state, done))
 
     def predict(self, state: List[int]) -> torch.Tensor:
-        return self.model(torch.tensor(state, dtype=torch.float).unsqueeze(0))
+        return self.policy_net(torch.tensor(state, dtype=torch.float).unsqueeze(0))
 
     def act(self, state: [int]) -> ActionType:
         if random.random() < self.exploration_rate:
@@ -429,6 +465,7 @@ class Solver:
         if self.batch_num % 100 == 0:
             print('batch', self.batch_num)
             print('average loss', self.cumulative_loss / 100)
+            print('exploration rate', self.exploration_rate)
             self.cumulative_loss = 0
 
         batch = random.sample(self.memory, BATCH_SIZE)
@@ -446,9 +483,9 @@ class Solver:
         state_tensor = torch.tensor(states, dtype=torch.float)
         reward_tensor = torch.tensor(rewards, dtype=torch.float)
 
-        current_predictions = self.model(state_tensor).gather(1, action_tensor)
+        current_predictions = self.policy_net(state_tensor).gather(1, action_tensor)
         next_predictions = torch.zeros(BATCH_SIZE)
-        next_predictions[non_terminal_mask] = self.model(non_terminal_next_states).max(1)[0].detach()
+        next_predictions[non_terminal_mask] = self.target_net(non_terminal_next_states).max(1)[0].detach()
         expected_q_values = (next_predictions * GAMMA) + reward_tensor
 
         loss = F.smooth_l1_loss(current_predictions, expected_q_values.unsqueeze(1))
@@ -456,8 +493,8 @@ class Solver:
         self.optimizer.zero_grad()
         loss.backward()
 
-        for param in self.model.parameters():
-            param.grad.data.clamp_(-5, 5)
+        # for param in self.model.parameters():
+        #     param.grad.data.clamp_(-5, 5)
 
         self.optimizer.step()
 
@@ -475,7 +512,7 @@ def main():
 
     env = Environment(GRID_SIZE)
     solver = Solver(
-        env.get_state().shape[1],
+        env.get_state().shape[1:],
         # checkpoint='model_bad_2.pt',
     )
     state = env.get_state()
@@ -496,6 +533,12 @@ def main():
                     return
 
             action_count += 1
+
+            # every COUNT actions, update the parameters in the target net
+            # based on the policy net.
+            if action_count % 100 == 0:
+                solver.target_net.load_state_dict(solver.policy_net.state_dict())
+
             if action_count % 1000 == 0:
                 print('average reward', average_reward(solver.memory, 1000))
 
@@ -509,10 +552,6 @@ def main():
             if terminal:
                 log('terminal', reward)
                 break
-
-            # if not env.has_valid_moves():
-            #     # print('no valid moves')
-            #     break
 
             solver.do_replay()
 
