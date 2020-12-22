@@ -22,7 +22,7 @@ from training_util import load_checkpoint, average_reward, checkpoint_model
 
 random.seed(1011970)
 
-GRID_SIZE = (3, 3)
+GRID_SIZE = (10, 10)
 CELL_SIZE = 40
 
 CELL_TYPE_EMPTY = 0
@@ -339,7 +339,7 @@ BATCH_SIZE = 40
 
 EXPLORATION_MAX = 1.0
 EXPLORATION_MIN = 0.01
-EXPLORATION_DECAY = 0.9995
+EXPLORATION_DECAY = 0.99995
 
 
 MemoryType = (List[int], ActionType, float, List[int], bool)
@@ -361,13 +361,23 @@ class TestNet(nn.Module):
             # nn.ReLU(),
             # nn.Linear(64, len(ActionType)),
         )
+        #     nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
+        #     nn.ReLU(),
+        #     nn.Conv2d(8, 8, kernel_size=2, stride=1),
+        #     nn.ReLU(),
+        #     nn.Conv2d(8, 8, kernel_size=2, stride=1),
         self.c1 = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=2, stride=1),
+            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
             nn.ReLU(),
         )
 
         self.c2 = nn.Sequential(
-            nn.Conv2d(16, 8, kernel_size=3, stride=1),
+            nn.Conv2d(8, 8, kernel_size=2, stride=1),
+            nn.ReLU(),
+        )
+
+        self.c3 =  nn.Sequential(
+            nn.Conv2d(8, 8, kernel_size=2, stride=1),
             nn.ReLU(),
         )
 
@@ -386,8 +396,43 @@ class TestNet(nn.Module):
         # result = self.conv(x)
         y1 = self.c1(x)
         y2 = self.c2(y1)
-        y3 = self.flatten(y2)
+        y3 = self.c3(y2)
+        y4 = self.flatten(y3)
         return y3
+
+
+class Net(nn.Module):
+
+    @staticmethod
+    def conv2d_size_out(size, kernel_size, stride, padding=0):
+        return (size - kernel_size + 2 * padding) // stride + 1
+
+    def __init__(self, observation_space: (int, int)):
+        super(Net, self).__init__()
+
+        conv_output_width = Net.conv2d_size_out(
+            Net.conv2d_size_out(observation_space[0], 1, 1),
+            3,
+            1,
+            2
+        )
+        conv_output_height = conv_output_width
+
+        linear_inputs = conv_output_width * conv_output_height * 32
+
+        self.sequential = nn.Sequential(
+            nn.Conv2d(1, 4, kernel_size=1, stride=1),
+            nn.ReLU(),
+            nn.Conv2d(4, 32, kernel_size=3, stride=1, padding=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(linear_inputs, 256),
+            nn.ReLU(),
+            nn.Linear(256, len(ActionType)),
+        )
+
+    def forward(self, inp: torch.FloatTensor):
+        return self.sequential(inp)
 
 
 class Solver:
@@ -404,37 +449,12 @@ class Solver:
         self.observation_space = observation_space
         self.action_space = len(ActionType)
 
-        linear_inputs = (observation_space[0]+1) * (observation_space[1]+1) * 4
+        # self.policy_net = TestNet()
+        # self.target_net = TestNet()
 
-        # self.model = TestNet()
+        self.policy_net = Net(observation_space)
+        self.target_net = Net(observation_space)
 
-        # working conv
-        self.policy_net = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
-            nn.ReLU(),
-            nn.Conv2d(8, 4, kernel_size=2, stride=1),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(linear_inputs, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, len(ActionType)),
-        )
-
-        # "old" network used for evaluating next states
-        self.target_net = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
-            nn.ReLU(),
-            nn.Conv2d(8, 4, kernel_size=2, stride=1),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(linear_inputs, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, len(ActionType)),
-        )
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
@@ -531,21 +551,22 @@ def train_loop():
     env = Environment(GRID_SIZE)
     solver = Solver(
         env.get_state().shape[1:],
-        # checkpoint='model_bad_2.pt',
+        checkpoint='model_10x10_400kbatch.pt',
     )
     state = env.get_state()
 
     do_visualize = True
     action_count = 0
-    parameter_update_count = 500
+    parameter_update_count = 1000
+    checkpoint_update_count = 10000
 
     while True:
         env.reset()
         state = env.get_state()
 
         while True:
-            if do_visualize:
-                clock.tick(60)
+            if action_count % 10000 == 0:
+                checkpoint_model(solver.policy_net, solver.optimizer, solver.memory, 'model.pt')
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
