@@ -19,11 +19,12 @@ class Grid:
         self.cell_size = cell_size
         self.width = rows * cell_size
         self.height = columns * cell_size
+        self.offset = (self.columns - 1) % 2
 
     def draw_background(self, surface: pygame.Surface):
         for i in range(self.rows):
             for j in range(self.columns):
-                cell_color = BACKGROUND_DARK if (i * self.rows + j) % 2 == 0 else BACKGROUND_LIGHT
+                cell_color = BACKGROUND_DARK if (i * self.rows + j - i * self.offset) % 2 == 0 else BACKGROUND_LIGHT
                 pygame.draw.rect(
                     surface,
                     cell_color,
