@@ -438,12 +438,15 @@ class Net(nn.Module):
 class Solver:
 
     memory: Deque['MemoryType']
+    device: Optional[torch.device]
 
     def __init__(
         self,
         observation_space: (int, int),
         checkpoint: Optional[str] = None,
+        device: Optional[torch.device] = None,
     ):
+        self.device = device
         self.exploration_rate = EXPLORATION_MAX
 
         self.observation_space = observation_space
@@ -452,8 +455,8 @@ class Solver:
         # self.policy_net = TestNet()
         # self.target_net = TestNet()
 
-        self.policy_net = Net(observation_space)
-        self.target_net = Net(observation_space)
+        self.policy_net = Net(observation_space).to(self.device)
+        self.target_net = Net(observation_space).to(self.device)
 
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
@@ -480,7 +483,7 @@ class Solver:
         self.memory.append((state, action, reward, next_state, done))
 
     def predict(self, state: List[int]) -> torch.Tensor:
-        return self.policy_net(torch.tensor(state, dtype=torch.float).unsqueeze(0))
+        return self.policy_net(torch.tensor(state, dtype=torch.float, device=self.device).unsqueeze(0))
 
     def act(self, state: [int]) -> ActionType:
         if random.random() < self.exploration_rate:
@@ -512,17 +515,17 @@ class Solver:
         non_terminal_mask = torch.tensor(list(map(
             lambda is_terminal: not is_terminal,
             terminals
-        )))
+        )), device=self.device)
         non_terminal_next_states = torch.tensor([
             s for s, t in zip(state_nexts, terminals) if not t
-        ], dtype=torch.float)
+        ], dtype=torch.float, device=self.device)
 
-        action_tensor = torch.tensor(list(map(lambda a: a.value, actions))).reshape((BATCH_SIZE, 1))
-        state_tensor = torch.tensor(states, dtype=torch.float)
-        reward_tensor = torch.tensor(rewards, dtype=torch.float)
+        action_tensor = torch.tensor(list(map(lambda a: a.value, actions)), device=self.device).reshape((BATCH_SIZE, 1))
+        state_tensor = torch.tensor(states, dtype=torch.float, device=self.device)
+        reward_tensor = torch.tensor(rewards, dtype=torch.float, device=self.device)
 
         current_predictions = self.policy_net(state_tensor).gather(1, action_tensor)
-        next_predictions = torch.zeros(BATCH_SIZE)
+        next_predictions = torch.zeros(BATCH_SIZE, device=self.device)
         next_predictions[non_terminal_mask] = self.target_net(non_terminal_next_states).max(1)[0].detach()
         expected_q_values = (next_predictions * GAMMA) + reward_tensor
 
@@ -543,7 +546,7 @@ class Solver:
         self.batch_num += 1
 
 
-def train_loop():
+def train_loop(maybe_device: Optional[torch.device] = None):
     screen = pygame.display.set_mode((GRID_SIZE[0] * CELL_SIZE, GRID_SIZE[1] * CELL_SIZE))
     grid = Grid(GRID_SIZE[0], GRID_SIZE[1], CELL_SIZE)
     clock = pygame.time.Clock()
@@ -552,6 +555,7 @@ def train_loop():
     solver = Solver(
         env.get_state().shape[1:],
         checkpoint='model_10x10_400kbatch.pt',
+        device=maybe_device,
     )
     state = env.get_state()
 
