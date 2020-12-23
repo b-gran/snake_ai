@@ -132,16 +132,16 @@ class Environment:
                 self.body_tail.position[1] == c
             )
         ):
-            return -10.0, True
+            return -1.0, True
 
         if (
             self.body_length == (self.size[0] * self.size[1]) - 1 and
             self.grid[r][c] == CELL_TYPE_FOOD
         ):
-            return 1000.0, True
+            return 10.0, True
 
         return (
-            100.0 if self.grid[r][c] == CELL_TYPE_FOOD else 0.0,
+            10.0 if self.grid[r][c] == CELL_TYPE_FOOD else 0.0,
             False
         )
 

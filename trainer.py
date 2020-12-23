@@ -20,7 +20,7 @@ from environment import (
     Direction,
     Environment,
 )
-from rendering import draw_grid, draw_gradients
+from rendering import draw_grid, draw_gradients, draw_stats
 from test_net import TestNet
 from training_util import load_checkpoint, average_reward, checkpoint_model
 
@@ -343,11 +343,13 @@ def human_test_loop():
 
 def test(snapshot: str):
     assert len(snapshot) > 0, 'must provide a snapshot'
+    pygame.init()
     screen = pygame.display.set_mode((
         GRID_SIZE[0] * CELL_SIZE * 2,
-        GRID_SIZE[1] * CELL_SIZE
+        GRID_SIZE[1] * CELL_SIZE + 25
     ))
     clock = pygame.time.Clock()
+    font = pygame.font.SysFont('americantypewriter', 14)
 
     grid = Grid(GRID_SIZE[0], GRID_SIZE[1], CELL_SIZE)
 
@@ -363,6 +365,9 @@ def test(snapshot: str):
     autoplay = True
     gradient = None
     is_terminated = False
+    current_score = 0
+    cumulative_score = 0
+    n_episodes = 1
 
     while True:
         clock.tick(20)
@@ -387,21 +392,35 @@ def test(snapshot: str):
             if is_terminated:
                 is_terminated = False
                 gradient = None
+                n_episodes += 1
+                current_score = 0
                 env.reset()
             else:
                 action, gradient = solver.act(state)
-                state_next, _, terminal = env.step(action)
+                state_next, reward, terminal = env.step(action)
                 state = state_next
+                if reward > 0:
+                    current_score += 1
+                    cumulative_score += 1
                 if terminal:
                     is_terminated = True
 
+        screen.fill((0, 0, 0))
         grid.draw_background(screen)
         draw_grid(env.grid, screen, CELL_SIZE)
         draw_gradients(gradient, screen, CELL_SIZE, (GRID_SIZE[0] * CELL_SIZE, 0))
+        draw_stats(
+            screen,
+            (0, GRID_SIZE[1] * CELL_SIZE + 5),
+            int(clock.get_fps()),
+            current_score,
+            cumulative_score / n_episodes,
+            font,
+        )
         pygame.display.flip()
 
 
 if __name__ == '__main__':
-    train_loop()
-    # test('gpu_10x10_deepmind_rms.pt')
+    # train_loop()
+    test('model_10x10_1M_3conv_100_reward_eating.pt')
     # human_test_loop()

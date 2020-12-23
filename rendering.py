@@ -1,11 +1,20 @@
 import pygame
 from environment import EnvironmentGrid, CELL_TYPE_BODY, CELL_TYPE_HEAD, CELL_TYPE_FOOD
-from typing import Optional
+from typing import Optional, Tuple
 import torch
 
 
 # FFA1C7
 COLOR_FOOD = (255, 161, 199)
+
+
+def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
+    stripped_hex = hex_str[1:] if hex_str[0] == '#' else hex_str
+    return (
+        int(stripped_hex[:2], 16),
+        int(stripped_hex[2:4], 16),
+        int(stripped_hex[4:6], 16),
+    )
 
 
 def draw_grid(state: EnvironmentGrid, surface: pygame.Surface, cell_size: int):
@@ -63,3 +72,66 @@ def draw_gradients(grads: Optional[torch.tensor], surface: pygame.Surface, cell_
                     cell_size,
                     ]
             )
+
+
+COLOR_KEY_NAME = hex_to_rgb('62FF7B')
+COLOR_VALUE = hex_to_rgb('FFFFFF')
+
+
+def draw_stats(surface: pygame.surface, position: (int, int), fps: int, score: int, average_score: float, font: pygame.font.Font):
+    text_fps_name = font.render('FPS:', True, COLOR_KEY_NAME)
+    text_fps_value = font.render(str(fps), True, COLOR_VALUE)
+
+    text_score_name = font.render('SCORE:', True, COLOR_KEY_NAME)
+    text_score_value = font.render(str(score), True, COLOR_VALUE)
+
+    text_avg_score_name = font.render('AVG SCORE:', True, COLOR_KEY_NAME)
+    text_avg_score_value = font.render(str(average_score)[:7], True, COLOR_VALUE)
+
+    surface.blit(
+        text_fps_name, position
+    )
+    position = (
+        position[0] + text_fps_name.get_rect().width + 10,
+        position[1],
+    )
+
+    surface.blit(
+        text_fps_value, position
+    )
+    position = (
+        position[0] + text_fps_value.get_rect().width + 30,
+        position[1],
+    )
+
+    surface.blit(
+        text_score_name, position
+    )
+    position = (
+        position[0] + text_score_name.get_rect().width + 10,
+        position[1],
+    )
+
+    surface.blit(
+        text_score_value, position
+    )
+    position = (
+        position[0] + text_score_value.get_rect().width + 30,
+        position[1],
+    )
+
+    surface.blit(
+        text_avg_score_name, position
+    )
+    position = (
+        position[0] + text_avg_score_name.get_rect().width + 10,
+        position[1],
+    )
+
+    surface.blit(
+        text_avg_score_value, position
+    )
+    position = (
+        position[0] + text_avg_score_value.get_rect().width + 30,
+        position[1],
+    )

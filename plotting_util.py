@@ -18,12 +18,11 @@ def get_plotter():
     )
 
     def plotter(action_count: int, solver: Any):
-        if action_count % 200 == 0:
-            plot_all_time.append(action_count, {
-                'loss': sum(solver.loss_buffer) / max(1, len(solver.loss_buffer)),
-                'reward': average_reward(solver.memory, 100)
-            })
+        plot_all_time.append(action_count, {
+            'loss': sum(solver.loss_buffer) / max(1, len(solver.loss_buffer)),
+            'reward': average_reward(solver.memory, 5000)
+        })
 
-            plot_all_time.draw()
+        plot_all_time.draw()
 
     return plotter
