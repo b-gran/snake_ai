@@ -153,7 +153,7 @@ class Solver:
 
     def epsilon(self, frame: int) -> float:
         # eps = lambda x: max(0.1, eps_max - x*(eps_max-eps_min)/eps_frames)
-        exploration_frames = 150000
+        exploration_frames = 50000
         return max(
             EXPLORATION_MIN,
             EXPLORATION_MAX - frame * (EXPLORATION_MAX - EXPLORATION_MIN) / exploration_frames
@@ -296,13 +296,13 @@ def train_loop(
 
             solver.do_replay()
 
-            if render_visualization:
+            if gui and render_visualization:
                 grid.draw_background(screen)
                 draw_grid(env.grid, screen, CELL_SIZE)
                 pygame.display.flip()
 
             if action_count % 5000 == 0:
-                plot_stats(action, solver)
+                plot_stats(action_count, solver)
 
 
 def human_test_loop():
