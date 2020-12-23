@@ -1,15 +1,12 @@
 import pygame
-import random
 from enum import Enum, auto
 
 from typing import Optional, Deque, List, Any, Callable
-from nptyping import NDArray
 
 from Grid import Grid
 
 import numpy as np
-
-from collections import deque
+import random
 
 import torch
 import torch.nn as nn
@@ -18,351 +15,22 @@ import torch.optim as optim
 
 from collections import deque
 
+from environment import (
+    ActionType,
+    Direction,
+    Environment,
+)
+from rendering import draw_grid, draw_gradients
+from test_net import TestNet
 from training_util import load_checkpoint, average_reward, checkpoint_model
 
-random.seed(1011970)
+MemoryType = (List[int], ActionType, float, List[int], bool)
 
 GRID_SIZE = (10, 10)
 CELL_SIZE = 40
-
-CELL_TYPE_EMPTY = 0
-CELL_TYPE_HEAD = 1
-CELL_TYPE_BODY = 2
-CELL_TYPE_FOOD = 3
-
-# FFA1C7
-COLOR_FOOD = (255, 161, 199)
-
-
-class ActionType(Enum):
-    ACTION_TYPE_NOTHING = 0
-    ACTION_TYPE_LEFT = 1
-    ACTION_TYPE_UP = 2
-    ACTION_TYPE_RIGHT = 3
-    ACTION_TYPE_DOWN = 4
-
-
-Position = (int, int)
-
-
-class BodyNode:
-    position: Position
-    next: Optional['BodyNode']
-    prev: Optional['BodyNode']
-
-    def __init__(self, position: Position):
-        self.position = position
-        self.next = None
-        self.prev = None
-
-
-class Direction(Enum):
-    UP = 0
-    RIGHT = 1
-    DOWN = 2
-    LEFT = 3
-
-
-DIRECTION_BY_ACTION = {
-    ActionType.ACTION_TYPE_LEFT: Direction.LEFT,
-    ActionType.ACTION_TYPE_RIGHT: Direction.RIGHT,
-    ActionType.ACTION_TYPE_UP: Direction.UP,
-    ActionType.ACTION_TYPE_DOWN: Direction.DOWN,
-}
-
 LOGGING = True
 
-
-def log(*args):
-    if LOGGING:
-        print(*args)
-
-
-def move_direction(position: Position, direction: Direction) -> Position:
-    r, c = position
-    if direction == Direction.UP:
-        return r - 1, c
-
-    if direction == Direction.RIGHT:
-        return r, c + 1
-
-    if direction == Direction.DOWN:
-        return r + 1, c
-
-    if direction == Direction.LEFT:
-        return r, c - 1
-
-    raise Exception('Invalid direction')
-
-
-EnvironmentGrid = List[List[int]]
-TState = NDArray[(Any, Any), np.float]
-
-
-def add_position(a: Position, b: Position) -> Position:
-    return a[0] + b[0], a[1] + b[1]
-
-
-class Environment:
-    body_tail: BodyNode
-    body_head: BodyNode
-    grid: EnvironmentGrid
-    head_position: Position
-    food_position: Position
-    direction: Direction
-    body_length: int
-    state_space: int
-
-    @staticmethod
-    def blank_state(size: (int, int)):
-        return [
-            [CELL_TYPE_EMPTY] * size[1] for _ in range(size[0])
-        ]
-
-    def __init__(self, size: (int, int)):
-        self.size = size
-        self.num_cells = size[0] * size[1]
-        self.state_space = self.num_cells + 1
-        self.reset()
-
-    def copy_grid(self):
-        copy = Environment.blank_state(self.size)
-        for i in range(self.size[0]):
-            for j in range(self.size[1]):
-                copy[i][j] = self.grid[i][j]
-        return copy
-
-    def get_state(self) -> TState:
-        np_float_grid = np.reshape(self.grid, self.size) * 1.0
-        return np.expand_dims(np_float_grid, 0)
-
-    def get_new_food_position(self):
-        valid_positions = []
-        for r in range(self.size[0]):
-            for c in range(self.size[1]):
-                if self.grid[r][c] == CELL_TYPE_EMPTY:
-                    valid_positions.append((r, c))
-
-        if len(valid_positions) == 0:
-            raise Exception('No valid positions on grid')
-
-        return random.choice(valid_positions)
-
-    def reset(self):
-        # Init empty state
-        rows = self.size[0]
-        cols = self.size[1]
-        self.grid = Environment.blank_state(self.size)
-        for i in range(rows):
-            for j in range(cols):
-                self.grid[i][j] = 0
-
-        # Init body
-        self.head_position = (int(rows / 2), int(cols / 2))
-        self.grid[self.head_position[0]][self.head_position[1]] = CELL_TYPE_HEAD
-        self.body_head = BodyNode(self.head_position)
-        self.body_tail = self.body_head
-        self.body_length = 1
-
-        # Init food
-        self.food_position = self.get_new_food_position()
-        self.grid[self.food_position[0]][self.food_position[1]] = CELL_TYPE_FOOD
-
-        # Init direction
-        self.direction = Direction.RIGHT
-
-    # Returns (reward, is_terminal)
-    def get_reward(self, new_position: Position) -> (float, bool):
-        r, c = new_position
-
-        if (
-            (
-                r >= self.size[0] or
-                r < 0 or
-                c >= self.size[1] or
-                c < 0 or
-                self.grid[r][c] == CELL_TYPE_BODY or
-                self.grid[r][c] == CELL_TYPE_HEAD
-            ) and not (
-                self.body_tail.position[0] == r and
-                self.body_tail.position[1] == c
-            )
-        ):
-            return -10.0, True
-
-        if (
-            self.body_length == (self.size[0] * self.size[1]) - 1 and
-            self.grid[r][c] == CELL_TYPE_FOOD
-        ):
-            return 1000.0, True
-
-        return (
-            100.0 if self.grid[r][c] == CELL_TYPE_FOOD else 0.0,
-            False
-        )
-
-    def is_legal_position(self, position: Position) -> bool:
-        r, c = position
-        return not (r >= self.size[0] or r < 0 or c >= self.size[1] or c < 0 or self.grid[r][c] == CELL_TYPE_BODY)
-
-    def can_move(self, action: ActionType) -> bool:
-        if action not in DIRECTION_BY_ACTION:
-            return False
-
-        r, c = move_direction(self.head_position, DIRECTION_BY_ACTION[action])
-
-        if (
-            (
-                r >= self.size[0] or
-                r < 0 or
-                c >= self.size[1] or
-                c < 0 or
-                self.grid[r][c] == CELL_TYPE_BODY
-            ) and not
-            (
-                self.body_tail.position[0] == r and self.body_tail.position[1] == c
-            )
-        ):
-            return False
-
-        return True
-
-    def step(self, action: ActionType) -> (TState, float, bool):
-        if self.can_move(action):
-            self.direction = DIRECTION_BY_ACTION[action]
-
-        new_position = move_direction(self.head_position, self.direction)
-
-        reward, is_terminal = self.get_reward(new_position)
-        if is_terminal:
-            return self.get_state(), reward, is_terminal
-
-        self.grid = self.copy_grid()
-
-        # Figure out if we ate food and need to grow
-        ate_food = self.grid[new_position[0]][new_position[1]] == CELL_TYPE_FOOD
-
-        # Move the head in the direction
-        self.grid[self.head_position[0]][self.head_position[1]] = CELL_TYPE_BODY
-        self.grid[new_position[0]][new_position[1]] = CELL_TYPE_HEAD
-        self.head_position = new_position
-
-        # Need to grow the snake
-        if ate_food:
-            self.body_length += 1
-
-            # Create new head
-            new_head = BodyNode(new_position)
-
-            # Add in front of current head
-            self.body_head.next = new_head
-            new_head.prev = self.body_head
-
-            # Update head
-            self.body_head = new_head
-
-            # Place new food
-            new_food_position = self.get_new_food_position()
-            self.grid[new_food_position[0]][new_food_position[1]] = CELL_TYPE_FOOD
-        else:
-            # Not growing snake
-            prev_tail = self.body_tail
-
-            # Clear cell at previous tail if we're not moving onto the tail
-            r, c = prev_tail.position
-            if self.grid[r][c] != CELL_TYPE_HEAD:
-                self.grid[r][c] = CELL_TYPE_EMPTY
-
-            if prev_tail.next:
-                # More than one node in the body, need to remove the tail.
-
-                # Clean up tail
-                prev_tail.next.prev = None
-                self.body_tail = prev_tail.next
-
-                # Add prev tail at head
-                self.body_head.next = prev_tail
-                prev_tail.prev = self.body_head
-                self.body_head = prev_tail
-                self.body_head.next = None
-
-            # Update head
-            self.body_head.position = new_position
-
-        return self.get_state(), reward, is_terminal
-
-    def has_valid_moves(self) -> bool:
-        potential_moves = [
-            add_position(self.head_position, (-1, 0)),  # up
-            add_position(self.head_position, (0, 1)),  # right
-            add_position(self.head_position, (1, 0)),  # down
-            add_position(self.head_position, (0, -1)),  # left
-        ]
-
-        for m in potential_moves:
-            if self.is_legal_position(m):
-                return True
-
-        return False
-
-
-def draw_grid(state: EnvironmentGrid, surface: pygame.Surface, cell_size: int):
-    rows = len(state)
-    cols = len(state[0])
-    for i in range(rows):
-        for j in range(cols):
-            if state[i][j] == CELL_TYPE_BODY or state[i][j] == CELL_TYPE_HEAD:
-                color = (255, 100, 100) if state[i][j] == CELL_TYPE_BODY else (200, 80, 80)
-                pygame.draw.rect(
-                    surface,
-                    color,
-                    [
-                        j * cell_size,
-                        i * cell_size,
-                        cell_size,
-                        cell_size,
-                    ]
-                )
-
-            if state[i][j] == CELL_TYPE_FOOD:
-                pygame.draw.circle(
-                    surface, COLOR_FOOD, [j * cell_size + cell_size / 2, i * cell_size + cell_size / 2],
-                    int(cell_size / 3)
-                )
-
-
-def draw_gradients(grads: Optional[torch.tensor], surface: pygame.Surface, cell_size: int, position: (int, int)):
-    if grads is None:
-        return
-
-    rows = len(grads)
-    cols = len(grads[0])
-
-    grads = grads.abs()
-
-    min_grad = float(grads.min())
-    max_value = float(grads.max()) - min_grad
-
-    def get_color(grad: float) -> (int, int, int):
-        value = int(255 * (grad - min_grad) / max_value)
-        return value, value, value
-
-    for i in range(rows):
-        for j in range(cols):
-            grad = grads[i][j]
-            color = get_color(grad)
-            pygame.draw.rect(
-                surface,
-                color,
-                [
-                    j * cell_size + position[0],
-                    i * cell_size + position[1],
-                    cell_size,
-                    cell_size,
-                ]
-            )
-
-
+# training parameters
 GAMMA = 0.95
 LEARNING_RATE = 0.001
 
@@ -371,66 +39,14 @@ BATCH_SIZE = 40
 
 EXPLORATION_MAX = 1.0
 EXPLORATION_MIN = 0.01
+
+# unused, doesn't apply to ε-greedy exploration
 EXPLORATION_DECAY = 0.99995
 
 
-MemoryType = (List[int], ActionType, float, List[int], bool)
-
-
-class TestNet(nn.Module):
-
-    def __init__(self):
-        super(TestNet, self).__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(1, 16, kernel_size=2, stride=1),
-            nn.BatchNorm2d(16),
-            nn.ReLU(),
-            nn.Conv2d(16, 8, kernel_size=3, stride=1),
-            nn.BatchNorm2d(8),
-            # nn.Linear(64, 64),
-            # nn.ReLU(),
-            # nn.Linear(64, 64),
-            # nn.ReLU(),
-            # nn.Linear(64, len(ActionType)),
-        )
-        #     nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
-        #     nn.ReLU(),
-        #     nn.Conv2d(8, 8, kernel_size=2, stride=1),
-        #     nn.ReLU(),
-        #     nn.Conv2d(8, 8, kernel_size=2, stride=1),
-        self.c1 = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=3, stride=1, padding=2),
-            nn.ReLU(),
-        )
-
-        self.c2 = nn.Sequential(
-            nn.Conv2d(8, 8, kernel_size=2, stride=1),
-            nn.ReLU(),
-        )
-
-        self.c3 =  nn.Sequential(
-            nn.Conv2d(8, 8, kernel_size=2, stride=1),
-            nn.ReLU(),
-        )
-
-        self.flatten = nn.Flatten()
-
-        self.lin = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(9, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, len(ActionType)),
-        )
-
-    def forward(self, x):
-        # result = self.conv(x)
-        y1 = self.c1(x)
-        y2 = self.c2(y1)
-        y3 = self.c3(y2)
-        y4 = self.flatten(y3)
-        return y3
+def log(*args):
+    if LOGGING:
+        print(*args)
 
 
 class Net(nn.Module):
@@ -482,9 +98,9 @@ class Solver:
         observation_space: (int, int),
         checkpoint: Optional[str] = None,
         device: Optional[torch.device] = None,
-        test: bool = False,
+        is_test: bool = False,
     ):
-        self.test = test
+        self.test = is_test
         self.device = device
         self.exploration_rate = EXPLORATION_MAX
 
@@ -543,6 +159,8 @@ class Solver:
             EXPLORATION_MAX - frame * (EXPLORATION_MAX - EXPLORATION_MIN) / exploration_frames
         )
 
+    # if not in test mode, returns (predicted action, None)
+    # if in test mode, returns (predicted action, gradient of prediction with respect to input)
     def act(self, state: [int]) -> (ActionType, Optional[torch.tensor]):
         current_frame = self.frame
         self.frame += 1
@@ -560,11 +178,9 @@ class Solver:
 
         # compute the gradient of the output with respect to the input
         result[0][result.argmax()].backward()
-
         return ActionType(int(result.argmax())), input_leaf.grad.squeeze()
 
-
-    def print_state(self, state: NDArray[(Any, Any), np.int]):
+    def print_state(self, state: np.ndarray):
         grid = np.reshape(state[0][:self.observation_space-1], GRID_SIZE)
         direction = state[0][self.observation_space-1]
         print(grid)
@@ -576,7 +192,6 @@ class Solver:
 
         if self.batch_num % 100 == 0:
             log('batch', self.batch_num)
-            # print('average loss', self.cumulative_loss / 100)
             log('average loss', sum(self.loss_buffer) / max(len(self.loss_buffer), 1))
             log('exploration rate', self.exploration_rate)
             self.cumulative_loss = 0
@@ -611,7 +226,6 @@ class Solver:
 
         self.optimizer.step()
 
-        # self.cumulative_loss += float(loss)
         self.loss_buffer.append(float(loss))
 
         self.exploration_rate = max(self.exploration_rate * EXPLORATION_DECAY, EXPLORATION_MIN)
@@ -687,7 +301,7 @@ def train_loop(
                 draw_grid(env.grid, screen, CELL_SIZE)
                 pygame.display.flip()
 
-            if action_count % 200 == 0:
+            if action_count % 5000 == 0:
                 plot_stats(action, solver)
 
 
@@ -702,7 +316,6 @@ def human_test_loop():
         clock.tick(60)
 
         terminal = False
-        reward = 0
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return
@@ -742,7 +355,7 @@ def test(snapshot: str):
     solver = Solver(
         env.get_state().shape[1:],
         checkpoint=snapshot,
-        test=True,
+        is_test=True,
     )
     solver.exploration_rate = 0.01
     state = env.get_state()
