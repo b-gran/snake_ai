@@ -2,7 +2,7 @@ import pygame
 import random
 from enum import Enum, auto
 
-from typing import Optional, Deque, List, Any
+from typing import Optional, Deque, List, Any, Callable
 from nptyping import NDArray
 
 from Grid import Grid
@@ -70,7 +70,7 @@ DIRECTION_BY_ACTION = {
     ActionType.ACTION_TYPE_DOWN: Direction.DOWN,
 }
 
-LOGGING = False
+LOGGING = True
 
 
 def log(*args):
@@ -442,11 +442,13 @@ class Net(nn.Module):
     def __init__(self, observation_space: (int, int)):
         super(Net, self).__init__()
 
-        conv_output_width = Net.conv2d_size_out(
-            Net.conv2d_size_out(observation_space[0], 1, 1),
-            3,
-            1,
-            2
+        # conv_output_width =  Net.conv2d_size_out(observation_space[0], 1, 1)
+        conv_output_width =  Net.conv2d_size_out(
+            Net.conv2d_size_out(
+                Net.conv2d_size_out(observation_space[0], 1, 1),
+                3, 1, 2
+            ),
+            2, 1, 1
         )
         conv_output_height = conv_output_width
 
@@ -456,6 +458,8 @@ class Net(nn.Module):
             nn.Conv2d(1, 8, kernel_size=1, stride=1),
             nn.ReLU(),
             nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=2),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=2, stride=1, padding=1),
             nn.ReLU(),
             nn.Flatten(),
             nn.Linear(linear_inputs, 256),
@@ -480,7 +484,7 @@ class Solver:
         device: Optional[torch.device] = None,
         test: bool = False,
     ):
-        self.test = test,
+        self.test = test
         self.device = device
         self.exploration_rate = EXPLORATION_MAX
 
@@ -544,9 +548,8 @@ class Solver:
         self.frame += 1
 
         if not self.test:
-            # if random.random() < self.exploration_rate:
             if random.random() < self.epsilon(current_frame):
-                return ActionType(random.randrange(self.action_space))
+                return ActionType(random.randrange(self.action_space)), None
 
             predictions = self.predict(state)
             return ActionType(int(predictions.argmax())), None
@@ -616,13 +619,17 @@ class Solver:
         self.batch_num += 1
 
 
-def train_loop(maybe_device: Optional[torch.device] = None, plot_curves: bool = False):
-    do_visualize = True
+def train_loop(
+    maybe_device: Optional[torch.device] = None,
+    gui: bool = True,
+    plot_stats: Callable[[int, Solver], None] = lambda _, __: None,
+    parameter_update_count: int = 1000,
+    checkpoint_update_count: int = 10000,
+):
+    render_visualization = True
     screen = None
-    clock = None
-    if do_visualize:
+    if gui:
         screen = pygame.display.set_mode((GRID_SIZE[0] * CELL_SIZE, GRID_SIZE[1] * CELL_SIZE))
-        clock = pygame.time.Clock()
 
     grid = Grid(GRID_SIZE[0], GRID_SIZE[1], CELL_SIZE)
 
@@ -632,26 +639,8 @@ def train_loop(maybe_device: Optional[torch.device] = None, plot_curves: bool = 
         # checkpoint='model_10x10_400kbatch.pt',
         device=maybe_device,
     )
-    state = env.get_state()
 
     action_count = 0
-    parameter_update_count = 1000
-    checkpoint_update_count = 10000
-
-    plot_all_time = None
-    if plot_curves:
-        from lrcurve import PlotLearningCurve
-        plot_all_time = PlotLearningCurve(
-            mappings={
-                'loss': { 'facet': 'loss', 'line': 'train' },
-                'reward': { 'facet': 'reward', 'line': 'train' },
-            },
-            facet_config={
-                'loss': { 'name': 'avg loss', 'scale': 'linear', 'limit': [0, None]  },
-                'reward': { 'name': 'avg reward', 'scale': 'linear', 'limit': [-10.0, None] }
-            },
-            xaxis_config={ 'name': 'count', 'limit': [0, None] }
-        )
 
     while True:
         env.reset()
@@ -661,9 +650,15 @@ def train_loop(maybe_device: Optional[torch.device] = None, plot_curves: bool = 
             if action_count % checkpoint_update_count == 0:
                 checkpoint_model(solver.policy_net, solver.optimizer, solver.memory, 'model.pt')
 
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    return
+            if gui:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        return
+
+                    if event.type == pygame.KEYDOWN:
+                        if event.key in (pygame.K_RETURN, pygame.K_SPACE):
+                            render_visualization = not render_visualization
+                            continue
 
             action_count += 1
 
@@ -687,18 +682,13 @@ def train_loop(maybe_device: Optional[torch.device] = None, plot_curves: bool = 
 
             solver.do_replay()
 
-            if do_visualize:
+            if render_visualization:
                 grid.draw_background(screen)
                 draw_grid(env.grid, screen, CELL_SIZE)
                 pygame.display.flip()
 
-            if plot_curves and action_count % 200 == 0:
-                plot_all_time.append(action_count, {
-                    'loss': sum(solver.loss_buffer) / max(1, len(solver.loss_buffer)),
-                    'reward': average_reward(solver.memory, 100)
-                })
-
-                plot_all_time.draw()
+            if action_count % 200 == 0:
+                plot_stats(action, solver)
 
 
 def human_test_loop():
@@ -730,7 +720,6 @@ def human_test_loop():
                     _, reward, terminal = env.step(ActionType.ACTION_TYPE_LEFT)
                     print('reward', reward)
 
-
         if terminal:
             env.reset()
 
@@ -740,7 +729,7 @@ def human_test_loop():
 
 
 def test(snapshot: str):
-    assert(len(snapshot) > 0, 'must provide a snapshot')
+    assert len(snapshot) > 0, 'must provide a snapshot'
     screen = pygame.display.set_mode((
         GRID_SIZE[0] * CELL_SIZE * 2,
         GRID_SIZE[1] * CELL_SIZE
@@ -800,6 +789,6 @@ def test(snapshot: str):
 
 
 if __name__ == '__main__':
-    # train_loop()
-    test('gpu_10x10_deepmind_rms.pt')
+    train_loop()
+    # test('gpu_10x10_deepmind_rms.pt')
     # human_test_loop()
