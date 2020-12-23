@@ -331,6 +331,38 @@ def draw_grid(state: EnvironmentGrid, surface: pygame.Surface, cell_size: int):
                 )
 
 
+def draw_gradients(grads: Optional[torch.tensor], surface: pygame.Surface, cell_size: int, position: (int, int)):
+    if grads is None:
+        return
+
+    rows = len(grads)
+    cols = len(grads[0])
+
+    grads = grads.abs()
+
+    min_grad = float(grads.min())
+    max_value = float(grads.max()) - min_grad
+
+    def get_color(grad: float) -> (int, int, int):
+        value = int(255 * (grad - min_grad) / max_value)
+        return value, value, value
+
+    for i in range(rows):
+        for j in range(cols):
+            grad = grads[i][j]
+            color = get_color(grad)
+            pygame.draw.rect(
+                surface,
+                color,
+                [
+                    j * cell_size + position[0],
+                    i * cell_size + position[1],
+                    cell_size,
+                    cell_size,
+                ]
+            )
+
+
 GAMMA = 0.95
 LEARNING_RATE = 0.001
 
@@ -418,12 +450,12 @@ class Net(nn.Module):
         )
         conv_output_height = conv_output_width
 
-        linear_inputs = conv_output_width * conv_output_height * 32
+        linear_inputs = conv_output_width * conv_output_height * 64
 
         self.sequential = nn.Sequential(
-            nn.Conv2d(1, 4, kernel_size=1, stride=1),
+            nn.Conv2d(1, 8, kernel_size=1, stride=1),
             nn.ReLU(),
-            nn.Conv2d(4, 32, kernel_size=3, stride=1, padding=2),
+            nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=2),
             nn.ReLU(),
             nn.Flatten(),
             nn.Linear(linear_inputs, 256),
@@ -439,13 +471,16 @@ class Solver:
 
     memory: Deque['MemoryType']
     device: Optional[torch.device]
+    loss_buffer: Deque[float]
 
     def __init__(
         self,
         observation_space: (int, int),
         checkpoint: Optional[str] = None,
         device: Optional[torch.device] = None,
+        test: bool = False,
     ):
+        self.test = test,
         self.device = device
         self.exploration_rate = EXPLORATION_MAX
 
@@ -461,7 +496,15 @@ class Solver:
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        self.optimizer = optim.RMSprop(self.policy_net.parameters())
+        # params from deepmind
+        self.optimizer = optim.RMSprop(
+            self.policy_net.parameters(),
+            lr=0.00025,
+            momentum=0.95,
+            eps=0.01,
+        )
+
+        # self.optimizer = optim.RMSprop(self.policy_net.parameters())
         # self.optimizer = optim.Adam(self.model.parameters(), lr=1e-2)
 
         if checkpoint is not None:
@@ -478,6 +521,9 @@ class Solver:
 
         self.batch_num = 0
         self.cumulative_loss = 0
+        self.loss_buffer = deque(maxlen=100)
+
+        self.frame = 0
 
     def memory_append(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
@@ -485,13 +531,35 @@ class Solver:
     def predict(self, state: List[int]) -> torch.Tensor:
         return self.policy_net(torch.tensor(state, dtype=torch.float, device=self.device).unsqueeze(0))
 
-    def act(self, state: [int]) -> ActionType:
-        if random.random() < self.exploration_rate:
-            return ActionType(random.randrange(self.action_space))
+    def epsilon(self, frame: int) -> float:
+        # eps = lambda x: max(0.1, eps_max - x*(eps_max-eps_min)/eps_frames)
+        exploration_frames = 150000
+        return max(
+            EXPLORATION_MIN,
+            EXPLORATION_MAX - frame * (EXPLORATION_MAX - EXPLORATION_MIN) / exploration_frames
+        )
 
-        predictions = self.predict(state)
+    def act(self, state: [int]) -> (ActionType, Optional[torch.tensor]):
+        current_frame = self.frame
+        self.frame += 1
 
-        return ActionType(int(predictions.argmax()))
+        if not self.test:
+            # if random.random() < self.exploration_rate:
+            if random.random() < self.epsilon(current_frame):
+                return ActionType(random.randrange(self.action_space))
+
+            predictions = self.predict(state)
+            return ActionType(int(predictions.argmax())), None
+
+        input_leaf = torch.tensor(state, dtype=torch.float, device=self.device, requires_grad=True)
+        input_tensor = input_leaf.unsqueeze(0)
+        result = self.policy_net(input_tensor)
+
+        # compute the gradient of the output with respect to the input
+        result[0][result.argmax()].backward()
+
+        return ActionType(int(result.argmax())), input_leaf.grad.squeeze()
+
 
     def print_state(self, state: NDArray[(Any, Any), np.int]):
         grid = np.reshape(state[0][:self.observation_space-1], GRID_SIZE)
@@ -504,9 +572,10 @@ class Solver:
             return
 
         if self.batch_num % 100 == 0:
-            print('batch', self.batch_num)
-            print('average loss', self.cumulative_loss / 100)
-            print('exploration rate', self.exploration_rate)
+            log('batch', self.batch_num)
+            # print('average loss', self.cumulative_loss / 100)
+            log('average loss', sum(self.loss_buffer) / max(len(self.loss_buffer), 1))
+            log('exploration rate', self.exploration_rate)
             self.cumulative_loss = 0
 
         batch = random.sample(self.memory, BATCH_SIZE)
@@ -539,30 +608,50 @@ class Solver:
 
         self.optimizer.step()
 
-        self.cumulative_loss += float(loss)
+        # self.cumulative_loss += float(loss)
+        self.loss_buffer.append(float(loss))
 
         self.exploration_rate = max(self.exploration_rate * EXPLORATION_DECAY, EXPLORATION_MIN)
 
         self.batch_num += 1
 
 
-def train_loop(maybe_device: Optional[torch.device] = None):
-    screen = pygame.display.set_mode((GRID_SIZE[0] * CELL_SIZE, GRID_SIZE[1] * CELL_SIZE))
+def train_loop(maybe_device: Optional[torch.device] = None, plot_curves: bool = False):
+    do_visualize = True
+    screen = None
+    clock = None
+    if do_visualize:
+        screen = pygame.display.set_mode((GRID_SIZE[0] * CELL_SIZE, GRID_SIZE[1] * CELL_SIZE))
+        clock = pygame.time.Clock()
+
     grid = Grid(GRID_SIZE[0], GRID_SIZE[1], CELL_SIZE)
-    clock = pygame.time.Clock()
 
     env = Environment(GRID_SIZE)
     solver = Solver(
         env.get_state().shape[1:],
-        checkpoint='model_10x10_400kbatch.pt',
+        # checkpoint='model_10x10_400kbatch.pt',
         device=maybe_device,
     )
     state = env.get_state()
 
-    do_visualize = True
     action_count = 0
     parameter_update_count = 1000
     checkpoint_update_count = 10000
+
+    plot_all_time = None
+    if plot_curves:
+        from lrcurve import PlotLearningCurve
+        plot_all_time = PlotLearningCurve(
+            mappings={
+                'loss': { 'facet': 'loss', 'line': 'train' },
+                'reward': { 'facet': 'reward', 'line': 'train' },
+            },
+            facet_config={
+                'loss': { 'name': 'avg loss', 'scale': 'linear', 'limit': [0, None]  },
+                'reward': { 'name': 'avg reward', 'scale': 'linear', 'limit': [-10.0, None] }
+            },
+            xaxis_config={ 'name': 'count', 'limit': [0, None] }
+        )
 
     while True:
         env.reset()
@@ -584,9 +673,9 @@ def train_loop(maybe_device: Optional[torch.device] = None):
                 solver.target_net.load_state_dict(solver.policy_net.state_dict())
 
             if action_count % 1000 == 0:
-                print('average reward', average_reward(solver.memory, 1000))
+                log('average reward', average_reward(solver.memory, 1000))
 
-            action = solver.act(state)
+            action, _ = solver.act(state)
             state_next, reward, terminal = env.step(action)
 
             solver.memory_append(state, action, reward, state_next, terminal)
@@ -594,7 +683,6 @@ def train_loop(maybe_device: Optional[torch.device] = None):
             state = state_next
 
             if terminal:
-                log('terminal', reward)
                 break
 
             solver.do_replay()
@@ -603,6 +691,14 @@ def train_loop(maybe_device: Optional[torch.device] = None):
                 grid.draw_background(screen)
                 draw_grid(env.grid, screen, CELL_SIZE)
                 pygame.display.flip()
+
+            if plot_curves and action_count % 200 == 0:
+                plot_all_time.append(action_count, {
+                    'loss': sum(solver.loss_buffer) / max(1, len(solver.loss_buffer)),
+                    'reward': average_reward(solver.memory, 100)
+                })
+
+                plot_all_time.draw()
 
 
 def human_test_loop():
@@ -636,7 +732,6 @@ def human_test_loop():
 
 
         if terminal:
-            log('terminal')
             env.reset()
 
         grid.draw_background(screen)
@@ -644,6 +739,67 @@ def human_test_loop():
         pygame.display.flip()
 
 
+def test(snapshot: str):
+    assert(len(snapshot) > 0, 'must provide a snapshot')
+    screen = pygame.display.set_mode((
+        GRID_SIZE[0] * CELL_SIZE * 2,
+        GRID_SIZE[1] * CELL_SIZE
+    ))
+    clock = pygame.time.Clock()
+
+    grid = Grid(GRID_SIZE[0], GRID_SIZE[1], CELL_SIZE)
+
+    env = Environment(GRID_SIZE)
+    solver = Solver(
+        env.get_state().shape[1:],
+        checkpoint=snapshot,
+        test=True,
+    )
+    solver.exploration_rate = 0.01
+    state = env.get_state()
+
+    autoplay = True
+    gradient = None
+    is_terminated = False
+
+    while True:
+        clock.tick(20)
+
+        run_simulation = autoplay
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    env.reset()
+                    continue
+
+                if event.key == pygame.K_UP:
+                    autoplay = not autoplay
+
+                if event.key == pygame.K_RIGHT and not autoplay:
+                    run_simulation = True
+
+        if run_simulation:
+            if is_terminated:
+                is_terminated = False
+                gradient = None
+                env.reset()
+            else:
+                action, gradient = solver.act(state)
+                state_next, _, terminal = env.step(action)
+                state = state_next
+                if terminal:
+                    is_terminated = True
+
+        grid.draw_background(screen)
+        draw_grid(env.grid, screen, CELL_SIZE)
+        draw_gradients(gradient, screen, CELL_SIZE, (GRID_SIZE[0] * CELL_SIZE, 0))
+        pygame.display.flip()
+
+
 if __name__ == '__main__':
-    train_loop()
+    # train_loop()
+    test('gpu_10x10_deepmind_rms.pt')
     # human_test_loop()

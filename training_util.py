@@ -30,5 +30,5 @@ def checkpoint_model(
 
 
 def load_checkpoint(path: str) -> (dict, dict):
-    checkpoint = torch.load(path)
+    checkpoint = torch.load(path, map_location=torch.device('cpu'))
     return checkpoint['model_state_dict'], checkpoint['optimizer_state_dict'], checkpoint['memory']
