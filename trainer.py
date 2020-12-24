@@ -78,9 +78,9 @@ class Net(nn.Module):
             nn.Conv2d(64, 64, kernel_size=2, stride=1, padding=1),
             nn.ReLU(),
             nn.Flatten(),
-            nn.Linear(linear_inputs, 256),
+            nn.Linear(linear_inputs, 512),
             nn.ReLU(),
-            nn.Linear(256, len(ActionType)),
+            nn.Linear(512, len(ActionType)),
         )
 
     def forward(self, inp: torch.FloatTensor):
@@ -422,5 +422,5 @@ def test(snapshot: str):
 
 if __name__ == '__main__':
     # train_loop()
-    test('model_10x10_1M_3conv_100_reward_eating.pt')
+    test('10x10_1M_512_smooth.pt')
     # human_test_loop()
