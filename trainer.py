@@ -49,6 +49,37 @@ def log(*args):
         print(*args)
 
 
+class AttentionBlock(nn.Module):
+
+    def __init__(self, input_features: int):
+        super(AttentionBlock, self).__init__()
+
+        self.operator = nn.Conv2d(
+            in_channels=input_features,
+            out_channels=1,
+            kernel_size=1,
+            padding=0,
+            bias=False,
+        )
+
+    def forward(self, l: torch.Tensor, g: torch.Tensor):
+        batch_size, channels, width, height = l.size()
+        g = g.reshape([batch_size, channels, 1, 1])
+        c = self.operator(l + g)
+        a = F.softmax(
+            c.view(batch_size, 1, -1),
+            dim=2
+        ).view(batch_size, 1, width, height)  # reshape to square
+
+        # weighted sum attention
+        g = torch.mul(a.expand_as(l), l)
+
+        # sum over grid to produce [batch_size, channels]
+        g = g.view(batch_size, channels, -1).sum(dim=2)
+
+        return c.view(batch_size, 1, width, height), g
+
+
 class Net(nn.Module):
 
     @staticmethod
@@ -70,22 +101,58 @@ class Net(nn.Module):
 
         linear_inputs = conv_output_width * conv_output_height * 64
 
-        self.sequential = nn.Sequential(
-            nn.Conv2d(1, 8, kernel_size=1, stride=1),
-            nn.ReLU(),
-            nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=2),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=2, stride=1, padding=1),
-            nn.ReLU(),
-            nn.Flatten(),
-            nn.Linear(linear_inputs, 512),
-            nn.ReLU(),
-            nn.Linear(512, len(ActionType)),
-        )
+        # self.sequential = nn.Sequential(
+        #     nn.Conv2d(1, 8, kernel_size=1, stride=1),
+        #     nn.ReLU(),
+        #     # attention here
+        #     nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=2),
+        #     nn.ReLU(),
+        #     nn.Conv2d(64, 64, kernel_size=2, stride=1, padding=1),
+        #     nn.ReLU(),
+        #     nn.Flatten(),
+        #     nn.Linear(linear_inputs, 512),
+        #     nn.ReLU(),
+        #     # attention here
+        #     nn.Linear(512, len(ActionType)),
+        # )
+
+        self.c1 = nn.Conv2d(1, 8, kernel_size=1, stride=1)
+        # self.a1 = AttentionBlock(8)
+        self.a1 = AttentionBlock(512)
+
+        self.c2 = nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=2)
+        self.c3 = nn.Conv2d(64, 64, kernel_size=2, stride=1, padding=1)
+        # self.a2 = AttentionBlock(64)
+        self.a2 = AttentionBlock(512)
+
+        self.dense = nn.Linear(linear_inputs, 512)
+
+        self.out = nn.Linear(1024, len(ActionType))
+        # self.out = nn.Linear(72, len(ActionType))
+
+        self.proj1 = nn.Linear(512, 8)
+        self.conv_proj1 = nn.Conv2d(8, 512, kernel_size=1, stride=1, padding=0)
+
+        self.proj2 = nn.Linear(512, 64)
+        self.conv_proj2 = nn.Conv2d(64, 512, kernel_size=1, stride=1, padding=0)
 
     def forward(self, inp: torch.FloatTensor):
-        return self.sequential(inp)
+        l1 = F.relu(self.c1(inp))
+        x = F.relu(self.c2(l1))
+        l2 = F.relu(self.c3(x))
+        x = l2.flatten(1)
+        g = F.relu(self.dense(x))
 
+        # c1, g1 = self.a1(l1, self.proj1(g))
+        c1, g1 = self.a1(self.conv_proj1(l1), g)
+
+        # c2, g2 = self.a2(l2, self.proj2(g))
+        c2, g2 = self.a2(self.conv_proj2(l2), g)
+
+        all_attention = torch.cat((g1, g2), dim=1)
+
+        x = self.out(all_attention)
+        return x
 
 class Solver:
 
@@ -421,6 +488,6 @@ def test(snapshot: str):
 
 
 if __name__ == '__main__':
-    # train_loop()
-    test('10x10_1M_512_smooth.pt')
+    train_loop()
+    # test('10x10_1M_512_smooth.pt')
     # human_test_loop()
