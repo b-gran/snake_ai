@@ -167,6 +167,9 @@ class Solver:
         checkpoint: Optional[str] = None,
         device: Optional[torch.device] = None,
         is_test: bool = False,
+        exploration_frames: int = 50000,
+        exploration_max: float = EXPLORATION_MAX,
+        exploration_min: float = EXPLORATION_MIN,
     ):
         self.test = is_test
         self.device = device
@@ -209,9 +212,14 @@ class Solver:
 
         self.batch_num = 0
         self.cumulative_loss = 0
-        self.loss_buffer = deque(maxlen=100)
+        self.loss_buffer = deque(maxlen=5000)
+        self.prediction_buffer = deque(maxlen=5000)
 
         self.frame = 0
+
+        self.exploration_frames = exploration_frames
+        self.exploration_max = exploration_max
+        self.exploration_min = exploration_min
 
     def memory_append(self, state, action, reward, next_state, done):
         self.memory.append((state, action, reward, next_state, done))
@@ -221,10 +229,9 @@ class Solver:
 
     def epsilon(self, frame: int) -> float:
         # eps = lambda x: max(0.1, eps_max - x*(eps_max-eps_min)/eps_frames)
-        exploration_frames = 50000
         return max(
-            EXPLORATION_MIN,
-            EXPLORATION_MAX - frame * (EXPLORATION_MAX - EXPLORATION_MIN) / exploration_frames
+            self.exploration_min,
+            self.exploration_max - frame * (self.exploration_max - self.exploration_min) / self.exploration_frames
         )
 
     # if not in test mode, returns (predicted action, None)
@@ -304,7 +311,7 @@ class Solver:
 def train_loop(
     maybe_device: Optional[torch.device] = None,
     gui: bool = True,
-    plot_stats: Callable[[int, Solver], None] = lambda _, __: None,
+    plot_stats: Callable[[int, Solver, Deque], None] = lambda _, __: None,
     parameter_update_count: int = 1000,
     checkpoint_update_count: int = 10000,
 ):
