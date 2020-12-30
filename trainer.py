@@ -488,6 +488,6 @@ def test(snapshot: str):
 
 
 if __name__ == '__main__':
-    train_loop()
+    train_loop(plot_stats=get_pyplot_plotter())
     # test('10x10_1M_512_smooth.pt')
     # human_test_loop()
