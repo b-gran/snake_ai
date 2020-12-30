@@ -1,7 +1,8 @@
-from typing import Optional, List
+from typing import Optional, List, DefaultDict, Tuple
 from enum import Enum
 import numpy as np
 import random
+from collections import defaultdict
 
 EnvironmentGrid = List[List[int]]
 Position = (int, int)
@@ -56,6 +57,8 @@ class Environment:
     direction: Direction
     body_length: int
     state_space: int
+    times_visited_by_location: DefaultDict[Tuple[int, int], int]
+    frames_since_food: int
 
     @staticmethod
     def blank_state(size: (int, int)):
@@ -67,6 +70,7 @@ class Environment:
         self.size = size
         self.num_cells = size[0] * size[1]
         self.state_space = self.num_cells + 1
+        self.times_visited_by_location = defaultdict(int)
         self.reset()
 
     def copy_grid(self):
@@ -114,6 +118,11 @@ class Environment:
 
         # Init direction
         self.direction = Direction.RIGHT
+
+        # Init times visited
+        self.times_visited_by_location = defaultdict(int)
+        self.times_visited_by_location[self.head_position] = 1
+        self.frames_since_food = 0
 
     # Returns (reward, is_terminal)
     def get_reward(self, new_position: Position) -> (float, bool):
@@ -232,6 +241,21 @@ class Environment:
 
             # Update head
             self.body_head.position = new_position
+
+        # Keep track of whether we're going in loops
+        if ate_food:
+            self.times_visited_by_location = defaultdict(int)
+            self.frames_since_food = 0
+        else:
+            self.frames_since_food += 1
+        self.times_visited_by_location[self.head_position] += 1
+
+        # If the snake is going in loops, terminate the episode
+        if (
+            self.times_visited_by_location[self.head_position] >= 5 or
+            self.frames_since_food >= self.size[0] * self.size[1]
+        ):
+            is_terminal = True
 
         return self.get_state(), reward, is_terminal
 
