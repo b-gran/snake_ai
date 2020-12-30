@@ -25,7 +25,10 @@ from test_net import TestNet
 from training_util import load_checkpoint, average_reward, checkpoint_model
 from plotting_util import get_pyplot_plotter
 
-MemoryType = (List[int], ActionType, float, List[int], bool)
+
+torch.autograd.set_detect_anomaly(True)
+
+MemoryType = (List[int], torch.tensor, ActionType, float, List[int], torch.tensor, bool)
 
 GRID_SIZE = (10, 10)
 CELL_SIZE = 40
@@ -119,41 +122,66 @@ class Net(nn.Module):
 
         self.c1 = nn.Conv2d(1, 8, kernel_size=1, stride=1)
         # self.a1 = AttentionBlock(8)
-        self.a1 = AttentionBlock(512)
+        # self.a1 = AttentionBlock(512)
 
         self.c2 = nn.Conv2d(8, 64, kernel_size=3, stride=1, padding=2)
         self.c3 = nn.Conv2d(64, 64, kernel_size=2, stride=1, padding=1)
         # self.a2 = AttentionBlock(64)
-        self.a2 = AttentionBlock(512)
+        self.a2 = AttentionBlock(256)
 
-        self.dense = nn.Linear(linear_inputs, 512)
+        self.dense = nn.Linear(linear_inputs, 256)
 
-        self.out = nn.Linear(1024, len(ActionType))
+        self.out = nn.Linear(512, len(ActionType))
         # self.out = nn.Linear(72, len(ActionType))
 
-        self.proj1 = nn.Linear(512, 8)
-        self.conv_proj1 = nn.Conv2d(8, 512, kernel_size=1, stride=1, padding=0)
+        # self.proj1 = nn.Linear(512, 8)
+        # self.conv_proj1 = nn.Conv2d(8, 512, kernel_size=1, stride=1, padding=0)
 
-        self.proj2 = nn.Linear(512, 64)
-        self.conv_proj2 = nn.Conv2d(64, 512, kernel_size=1, stride=1, padding=0)
+        # self.proj2 = nn.Linear(256, 64)
+        self.conv_proj2 = nn.Conv2d(64, 256, kernel_size=1, stride=1, padding=0)
 
-    def forward(self, inp: torch.FloatTensor):
-        l1 = F.relu(self.c1(inp))
+        hidden_size = 512
+        self.lstm = nn.LSTM(512, hidden_size)
+
+        initial_hidden_tensor = nn.Parameter(torch.randn(2, hidden_size), requires_grad=True)
+        # initial_hidden_context = nn.Parameter(torch.randn(hidden_size), requires_grad=True)
+
+        # self.initial_hidden = nn.Parameter(initial_hidden_tensor, requires_grad=True)
+
+        # self.initial_hidden = nn.Parameter(initial_hidden_tensor, requires_grad=True)
+        # self.initial_hidden = torch.randn(2, hidden_size)
+        self.initial_hidden = initial_hidden_tensor
+
+    def forward(self, game_input: torch.FloatTensor, prev_state: torch.FloatTensor):
+        l1 = F.relu(self.c1(game_input))
         x = F.relu(self.c2(l1))
         l2 = F.relu(self.c3(x))
         x = l2.flatten(1)
         g = F.relu(self.dense(x))
 
         # c1, g1 = self.a1(l1, self.proj1(g))
-        c1, g1 = self.a1(self.conv_proj1(l1), g)
+        # c1, g1 = self.a1(self.conv_proj1(l1), g)
 
         # c2, g2 = self.a2(l2, self.proj2(g))
         c2, g2 = self.a2(self.conv_proj2(l2), g)
 
-        all_attention = torch.cat((g1, g2), dim=1)
+        all_attention = torch.cat((g, g2), dim=1)
 
-        x = self.out(all_attention)
-        return x
+        attn_seq = all_attention.unsqueeze(0)
+
+        # dim 0 is (hidden_state, ctx) so add sequence at dimension 1
+        prev_state_seq = prev_state.unsqueeze(1)
+        prev_state = (prev_state_seq[0].detach(), prev_state_seq[1].detach())
+
+        lstm_out, hidden = self.lstm(
+            attn_seq,
+            prev_state,
+        )
+
+        # x = self.out(all_attention)
+        x = self.out(lstm_out)
+        return x, hidden
+
 
 class Solver:
 
@@ -221,8 +249,10 @@ class Solver:
         self.exploration_max = exploration_max
         self.exploration_min = exploration_min
 
-    def memory_append(self, state, action, reward, next_state, done):
-        self.memory.append((state, action, reward, next_state, done))
+        self.last_hidden_state = self.policy_net.initial_hidden
+
+    def memory_append(self, state, hidden, action, reward, next_state, next_hidden, done):
+        self.memory.append((state, hidden, action, reward, next_state, next_hidden, done))
 
     def predict(self, state: List[int]) -> torch.Tensor:
         return self.policy_net(torch.tensor(state, dtype=torch.float, device=self.device).unsqueeze(0))
@@ -234,8 +264,11 @@ class Solver:
             self.exploration_max - frame * (self.exploration_max - self.exploration_min) / self.exploration_frames
         )
 
+    def reset_hidden_state(self):
+        self.last_hidden_state = self.policy_net.initial_hidden
+
     # if not in test mode, returns (predicted action, None)
-    # if in test mode, returns (predicted action, gradient of prediction with respect to input)
+    # if in test mode, returns (predicted action, hidden state, gradient of prediction with respect to input)
     def act(self, state: [int]) -> (ActionType, Optional[torch.tensor]):
         current_frame = self.frame
         self.frame += 1
@@ -244,13 +277,31 @@ class Solver:
             if random.random() < self.epsilon(current_frame):
                 return ActionType(random.randrange(self.action_space)), None
 
-            predictions = self.predict(state)
+            # add batch dimension
+            input_tensor = torch.tensor(state, dtype=torch.float, device=self.device).unsqueeze(0)
+
+            # first dimension is (state, ctx), so add batch at dim 1
+            hidden_state_batch = self.last_hidden_state.unsqueeze(1)
+
+            predictions, hidden = self.policy_net(input_tensor, hidden_state_batch)
+
+            # predictions = self.predict(state)
+
+            # first dimension should be (state, ctx)
+            # squeeze out batch and sequence dimensions (sequence is always 1)
+            self.last_hidden_state = torch.stack((
+                hidden[0].squeeze(),
+                hidden[1].squeeze(),
+            ))
             self.prediction_buffer.append(float(predictions.max()))
+
             return ActionType(int(predictions.argmax())), None
 
         input_leaf = torch.tensor(state, dtype=torch.float, device=self.device, requires_grad=True)
         input_tensor = input_leaf.unsqueeze(0)
-        result = self.policy_net(input_tensor)
+        result, hidden = self.policy_net(input_tensor, self.last_hidden_state.unsqueeze(0))
+
+        self.last_hidden_state = hidden
 
         # compute the gradient of the output with respect to the input
         result[0][result.argmax()].backward()
@@ -274,7 +325,7 @@ class Solver:
 
         batch = random.sample(self.memory, BATCH_SIZE)
 
-        states, actions, rewards, state_nexts, terminals = zip(*batch)
+        states, hiddens, actions, rewards, state_nexts, next_hiddens, terminals = zip(*batch)
         non_terminal_mask = torch.tensor(list(map(
             lambda is_terminal: not is_terminal,
             terminals
@@ -287,9 +338,27 @@ class Solver:
         state_tensor = torch.tensor(states, dtype=torch.float, device=self.device)
         reward_tensor = torch.tensor(rewards, dtype=torch.float, device=self.device)
 
-        current_predictions = self.policy_net(state_tensor).gather(1, action_tensor)
+        # stack on dim=1 so that dim 0 is (state, ctx)
+        hidden_tensor = torch.stack(hiddens, 1).to(self.device)
+
+        non_terminal_next_hiddens = torch.stack([
+            s for s, t in zip(next_hiddens, terminals) if not t
+        ], 1).to(self.device)
+
+        # original
+        # current_predictions = self.policy_net(state_tensor, hidden_tensor).gather(1, action_tensor)
+
+        out, _ = self.policy_net(state_tensor, hidden_tensor)
+        current_predictions = out.squeeze().gather(1, action_tensor)  # squeeze to remove sequence dimension
+
         next_predictions = torch.zeros(BATCH_SIZE, device=self.device)
-        next_predictions[non_terminal_mask] = self.target_net(non_terminal_next_states).max(1)[0].detach()
+
+        # original
+        # next_predictions[non_terminal_mask] = self.target_net(non_terminal_next_states, non_terminal_next_hiddens).max(1)[0].detach()
+
+        next_out, _ = self.target_net(non_terminal_next_states, non_terminal_next_hiddens)
+        next_predictions[non_terminal_mask] = next_out.detach().squeeze().max(1)[0]
+
         expected_q_values = (next_predictions * GAMMA) + reward_tensor
 
         loss = F.smooth_l1_loss(current_predictions, expected_q_values.unsqueeze(1))
@@ -328,6 +397,7 @@ def train_loop(
         env.get_state().shape[1:],
         # checkpoint='model_10x10_400kbatch.pt',
         device=maybe_device,
+        exploration_frames=1,
     )
 
     action_count = 0
@@ -337,6 +407,7 @@ def train_loop(
     while True:
         env.reset()
         state = env.get_state()
+        solver.reset_hidden_state()
 
         while True:
             if action_count % checkpoint_update_count == 0:
@@ -362,10 +433,12 @@ def train_loop(
             if action_count % 1000 == 0:
                 log('average reward', average_reward(solver.memory, 1000))
 
+            hidden = solver.last_hidden_state
             action, _ = solver.act(state)
+            next_hidden = solver.last_hidden_state
             state_next, reward, terminal = env.step(action)
 
-            solver.memory_append(state, action, reward, state_next, terminal)
+            solver.memory_append(state, hidden.clone(), action, reward, state_next, next_hidden.clone(), terminal)
 
             state = state_next
 

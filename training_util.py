@@ -8,7 +8,7 @@ def average_reward(memory: deque, num_trials: int) -> float:
     total_reward = 0
     trials_seen = 0
     for i in range(min(num_trials, memory_size)):
-        _, _, reward, _, terminal = memory[memory_size-1-i]
+        _, _, _, reward, _, _, terminal = memory[memory_size-1-i]
         total_reward += reward
         if terminal:
             trials_seen += 1
