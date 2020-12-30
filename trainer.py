@@ -322,6 +322,8 @@ def train_loop(
     )
 
     action_count = 0
+    scores = deque()
+    current_score = 0
 
     while True:
         env.reset()
@@ -358,7 +360,12 @@ def train_loop(
 
             state = state_next
 
+            if reward > 0:
+                current_score += 1
+
             if terminal:
+                scores.append(current_score)
+                current_score = 0
                 break
 
             solver.do_replay()
@@ -369,7 +376,8 @@ def train_loop(
                 pygame.display.flip()
 
             if action_count % 5000 == 0:
-                plot_stats(action_count, solver)
+                plot_stats(action_count, solver, scores)
+                scores.clear()
 
 
 def human_test_loop():
