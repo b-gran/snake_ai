@@ -23,6 +23,7 @@ from environment import (
 from rendering import draw_grid, draw_gradients, draw_stats
 from test_net import TestNet
 from training_util import load_checkpoint, average_reward, checkpoint_model
+from plotting_util import get_pyplot_plotter
 
 MemoryType = (List[int], ActionType, float, List[int], bool)
 
