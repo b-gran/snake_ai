@@ -1,11 +1,18 @@
 import pygame
-from environment import EnvironmentGrid, CELL_TYPE_BODY, CELL_TYPE_HEAD, CELL_TYPE_FOOD
+from environment import EnvironmentGrid, CELL_TYPE_BODY, CELL_TYPE_HEAD, CELL_TYPE_FOOD, CELL_TYPE_INTERSECT
 from typing import Optional, Tuple
 import torch
 
 
 # FFA1C7
 COLOR_FOOD = (255, 161, 199)
+
+cell_color_by_cell_type = dict()
+cell_color_by_cell_type[CELL_TYPE_BODY] = (255, 100, 100)
+cell_color_by_cell_type[CELL_TYPE_HEAD] = (200, 80, 80)
+cell_color_by_cell_type[CELL_TYPE_INTERSECT] = (198, 104, 255)
+
+visible_cells = set(cell_color_by_cell_type.keys())
 
 
 def hex_to_rgb(hex_str: str) -> Tuple[int, int, int]:
@@ -22,8 +29,8 @@ def draw_grid(state: EnvironmentGrid, surface: pygame.Surface, cell_size: int):
     cols = len(state[0])
     for i in range(rows):
         for j in range(cols):
-            if state[i][j] == CELL_TYPE_BODY or state[i][j] == CELL_TYPE_HEAD:
-                color = (255, 100, 100) if state[i][j] == CELL_TYPE_BODY else (200, 80, 80)
+            if state[i][j] in visible_cells:
+                color = cell_color_by_cell_type[state[i][j]]
                 pygame.draw.rect(
                     surface,
                     color,
@@ -32,7 +39,7 @@ def draw_grid(state: EnvironmentGrid, surface: pygame.Surface, cell_size: int):
                         i * cell_size,
                         cell_size,
                         cell_size,
-                        ]
+                    ]
                 )
 
             if state[i][j] == CELL_TYPE_FOOD:

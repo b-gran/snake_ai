@@ -12,6 +12,7 @@ CELL_TYPE_EMPTY = 0
 CELL_TYPE_HEAD = 1
 CELL_TYPE_BODY = 2
 CELL_TYPE_FOOD = 3
+CELL_TYPE_INTERSECT = 4
 
 
 class Direction(Enum):
@@ -158,47 +159,48 @@ class Environment:
         r, c = position
         return not (r >= self.size[0] or r < 0 or c >= self.size[1] or c < 0 or self.grid[r][c] == CELL_TYPE_BODY)
 
-    def can_move(self, action: ActionType) -> bool:
+    def is_forward_direction(self, action: ActionType) -> bool:
         if action not in DIRECTION_BY_ACTION:
             return False
 
-        r, c = move_direction(self.head_position, DIRECTION_BY_ACTION[action])
+        if self.body_length < 3:
+            return True
 
-        if (
-            (
-                r >= self.size[0] or
-                r < 0 or
-                c >= self.size[1] or
-                c < 0 or
-                self.grid[r][c] == CELL_TYPE_BODY
-            ) and not
-        (
-            self.body_tail.position[0] == r and self.body_tail.position[1] == c
-        )
-        ):
-            return False
+        if action == ActionType.ACTION_TYPE_RIGHT:
+            return self.direction != Direction.LEFT
+        elif action == ActionType.ACTION_TYPE_LEFT:
+            return self.direction != Direction.RIGHT
+        elif action == ActionType.ACTION_TYPE_DOWN:
+            return self.direction != Direction.UP
+        elif action == ActionType.ACTION_TYPE_UP:
+            return self.direction != Direction.DOWN
 
-        return True
+        return False
+
+    def is_in_bounds(self, position: Position) -> bool:
+        r, c = position
+        return not (r >= self.size[0] or r < 0 or c >= self.size[1] or c < 0)
 
     def step(self, action: ActionType) -> (TState, float, bool):
-        if self.can_move(action):
+        if self.is_forward_direction(action):
             self.direction = DIRECTION_BY_ACTION[action]
 
         new_position = move_direction(self.head_position, self.direction)
 
         reward, is_terminal = self.get_reward(new_position)
-        if is_terminal:
-            return self.get_state(), reward, is_terminal
+
+        # if we try to move outside the grid, the next state is a blank screen.
+        if is_terminal and not self.is_in_bounds(new_position):
+            self.grid = Environment.blank_state(self.size)
+            return self.grid, reward, is_terminal
 
         self.grid = self.copy_grid()
 
         # Figure out if we ate food and need to grow
         ate_food = self.grid[new_position[0]][new_position[1]] == CELL_TYPE_FOOD
 
-        # Move the head in the direction
-        self.grid[self.head_position[0]][self.head_position[1]] = CELL_TYPE_BODY
-        self.grid[new_position[0]][new_position[1]] = CELL_TYPE_HEAD
-        self.head_position = new_position
+        initial_head_position = self.body_head.position
+        self.grid[initial_head_position[0]][initial_head_position[1]] = CELL_TYPE_BODY
 
         # Need to grow the snake
         if ate_food:
@@ -214,17 +216,17 @@ class Environment:
             # Update head
             self.body_head = new_head
 
-            # Place new food
-            new_food_position = self.get_new_food_position()
-            self.grid[new_food_position[0]][new_food_position[1]] = CELL_TYPE_FOOD
+            # Place new food if we haven't won
+            if self.body_length != self.size[0] * self.size[1]:
+                new_food_position = self.get_new_food_position()
+                self.grid[new_food_position[0]][new_food_position[1]] = CELL_TYPE_FOOD
         else:
             # Not growing snake
             prev_tail = self.body_tail
 
-            # Clear cell at previous tail if we're not moving onto the tail
+            # Clear cell at previous tail
             r, c = prev_tail.position
-            if self.grid[r][c] != CELL_TYPE_HEAD:
-                self.grid[r][c] = CELL_TYPE_EMPTY
+            self.grid[r][c] = CELL_TYPE_EMPTY
 
             if prev_tail.next:
                 # More than one node in the body, need to remove the tail.
@@ -242,13 +244,20 @@ class Environment:
             # Update head
             self.body_head.position = new_position
 
+        # Move the head in the current direction
+        previous_head_type = self.grid[new_position[0]][new_position[1]]
+        head_type = CELL_TYPE_HEAD if previous_head_type != CELL_TYPE_BODY else CELL_TYPE_INTERSECT
+        self.grid[new_position[0]][new_position[1]] = head_type
+        self.head_position = new_position
+
         # Keep track of whether we're going in loops
-        if ate_food:
-            self.times_visited_by_location = defaultdict(int)
-            self.frames_since_food = 0
-        else:
-            self.frames_since_food += 1
-        self.times_visited_by_location[self.head_position] += 1
+        if not is_terminal:
+            if ate_food:
+                self.times_visited_by_location = defaultdict(int)
+                self.frames_since_food = 0
+            else:
+                self.frames_since_food += 1
+            self.times_visited_by_location[self.head_position] += 1
 
         # If the snake is going in loops, terminate the episode
         if (
@@ -272,6 +281,17 @@ class Environment:
                 return True
 
         return False
+
+    def print_debug_grid(self):
+        char_by_cell_type = dict()
+        char_by_cell_type[CELL_TYPE_EMPTY] = ' '
+        char_by_cell_type[CELL_TYPE_HEAD] = 'H'
+        char_by_cell_type[CELL_TYPE_BODY] = 'B'
+        char_by_cell_type[CELL_TYPE_FOOD] = 'F'
+        char_by_cell_type[CELL_TYPE_INTERSECT] = 'X'
+
+        for row in self.grid:
+            print(''.join(char_by_cell_type[c] for c in row))
 
 
 def move_direction(position: Position, direction: Direction) -> Position:
