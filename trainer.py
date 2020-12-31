@@ -245,6 +245,7 @@ class Solver:
                 return ActionType(random.randrange(self.action_space)), None
 
             predictions = self.predict(state)
+            self.prediction_buffer.append(float(predictions.max()))
             return ActionType(int(predictions.argmax())), None
 
         input_leaf = torch.tensor(state, dtype=torch.float, device=self.device, requires_grad=True)
