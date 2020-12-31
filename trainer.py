@@ -395,6 +395,7 @@ def human_test_loop():
     clock = pygame.time.Clock()
 
     env = Environment(GRID_SIZE)
+    finished_episode = False
 
     while True:
         clock.tick(60)
@@ -404,7 +405,10 @@ def human_test_loop():
             if event.type == pygame.QUIT:
                 return
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_UP:
+                if finished_episode:
+                    finished_episode = False
+                    env.reset()
+                elif event.key == pygame.K_UP:
                     _, reward, terminal = env.step(ActionType.ACTION_TYPE_UP)
                     print('reward', reward)
                 elif event.key == pygame.K_RIGHT:
@@ -417,13 +421,12 @@ def human_test_loop():
                     _, reward, terminal = env.step(ActionType.ACTION_TYPE_LEFT)
                     print('reward', reward)
 
-        if terminal:
-            env.reset()
-
         grid.draw_background(screen)
         draw_grid(env.grid, screen, CELL_SIZE)
         pygame.display.flip()
 
+        if terminal:
+            finished_episode = True
 
 def test(snapshot: str):
     assert len(snapshot) > 0, 'must provide a snapshot'
@@ -505,6 +508,6 @@ def test(snapshot: str):
 
 
 if __name__ == '__main__':
-    train_loop(plot_stats=get_pyplot_plotter())
+    # train_loop(plot_stats=get_pyplot_plotter())
     # test('10x10_1M_512_smooth.pt')
-    # human_test_loop()
+    human_test_loop()
