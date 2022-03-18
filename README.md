@@ -1,1 +1,1 @@
-![Demo][docs/demo.mov]
+![Demo](docs/demo.gif)
